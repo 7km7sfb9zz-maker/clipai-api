@@ -1,558 +1,487 @@
-<!DOCTYPE html>
-<html lang="en">
-
-<head>
-<meta charset="UTF-8">
-
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-<title>ClipAI</title>
-
-<style>
-
-* {
-    box-sizing: border-box;
-}
-
-body {
-    margin: 0;
-    min-height: 100vh;
-    background: #080808;
-    color: white;
-    font-family: -apple-system, BlinkMacSystemFont,
-                 "Segoe UI", Arial, sans-serif;
-}
-
-.container {
-    max-width: 700px;
-    margin: auto;
-    padding: 60px 20px;
-    text-align: center;
-}
-
-.logo {
-    font-size: 52px;
-    font-weight: 800;
-    letter-spacing: -2px;
-}
-
-.logo span {
-    color: #7c5cff;
-}
-
-.subtitle {
-    color: #999;
-    font-size: 18px;
-    margin-bottom: 40px;
-}
-
-.upload {
-    background: #111;
-    border: 2px dashed #333;
-    border-radius: 20px;
-    padding: 35px 20px;
-}
-
-input[type="file"] {
-    width: 100%;
-    margin-top: 20px;
-}
-
-button {
-    margin-top: 25px;
-    padding: 15px 30px;
-    border: none;
-    border-radius: 12px;
-    background: #7c5cff;
-    color: white;
-    font-size: 17px;
-    font-weight: bold;
-    cursor: pointer;
-}
-
-button:disabled {
-    opacity: 0.5;
-}
-
-#status {
-    margin-top: 20px;
-    color: #aaa;
-    min-height: 24px;
-}
-
-.clip {
-    margin-top: 20px;
-    padding: 20px;
-    background: #151515;
-    border-radius: 15px;
-    text-align: left;
-}
-
-.hook {
-    font-size: 21px;
-    font-weight: 700;
-    line-height: 1.5;
-}
-
-.hook-label {
-    color: #7c5cff;
-    font-weight: bold;
-    margin-bottom: 8px;
-}
-
-.viral {
-    border: 1px solid #292929;
-}
-
-.score {
-    font-size: 28px;
-    font-weight: 800;
-}
-
-.score-label {
-    color: #999;
-    font-size: 13px;
-}
-
-.clip-time {
-    color: #7c5cff;
-    font-weight: bold;
-    margin-top: 12px;
-}
-
-.reason {
-    color: #bbb;
-    line-height: 1.5;
-}
-
-.success {
-    color: #66ff99;
-}
-
-.error {
-    color: #ff6666;
-}
-
-.transcript {
-    white-space: pre-wrap;
-    line-height: 1.6;
-}
-
-</style>
-
-</head>
-
-
-<body>
-
-
-<div class="container">
-
-
-<h1 class="logo">
-Clip<span>AI</span>
-</h1>
-
-
-<p class="subtitle">
-Turn long videos into short-form content.
-</p>
-
-
-<div class="upload">
-
-
-<h2>
-Upload a video
-</h2>
-
-
-<p>
-ClipAI will transcribe and analyse your video using AI.
-</p>
-
-
-<input
-    type="file"
-    id="video"
-    accept="video/*"
->
-
-
-<br>
-
-
-<button
-    id="analyseButton"
-    onclick="analyse()"
->
-
-Find Viral Clips
-
-</button>
-
-
-<div id="status"></div>
-
-
-<div id="results"></div>
-
-
-</div>
-
-
-</div>
-
-
-<script>
-
-
-const API_URL =
-"https://clipai-api.7km7sfb9zz.workers.dev";
-
-
-async function analyse() {
-
-
-    const file =
-        document.getElementById("video").files[0];
-
-
-    const status =
-        document.getElementById("status");
-
-
-    const results =
-        document.getElementById("results");
-
-
-    const button =
-        document.getElementById("analyseButton");
-
-
-    if (!file) {
-
-        status.innerText =
-            "Please select a video first.";
-
-        status.className =
-            "error";
-
-        return;
-
+export default {
+  async fetch(request, env) {
+
+    const cors = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type"
+    };
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: cors
+      });
     }
 
-
-    button.disabled = true;
-
-    results.innerHTML = "";
-
-    status.innerText =
-        "Preparing your video...";
-
-    status.className = "";
-
+    if (request.method !== "POST") {
+      return json(
+        { error: "Use POST" },
+        405,
+        cors
+      );
+    }
 
     try {
 
+      const formData =
+        await request.formData();
 
-        const formData =
-            new FormData();
+      const audio =
+        formData.get("audio");
+
+      if (!audio) {
+        return json(
+          {
+            error:
+              "No audio/video file received."
+          },
+          400,
+          cors
+        );
+      }
+
+      const audioBuffer =
+        await audio.arrayBuffer();
+
+      const audioBytes =
+        [...new Uint8Array(audioBuffer)];
 
 
-        formData.append(
-            "audio",
-            file
+      // ==============================
+      // WHISPER TRANSCRIPTION
+      // ==============================
+
+      const transcription =
+        await env.AI.run(
+          "@cf/openai/whisper",
+          {
+            audio: audioBytes
+          }
         );
 
+      const transcript =
+        transcription.text || "";
 
-        status.innerText =
-            "Uploading video to ClipAI...";
+      const segments =
+        transcription.segments || [];
+
+      const words =
+        transcription.words || [];
 
 
-        const response =
-            await fetch(
-                API_URL,
+      // ==============================
+      // AI HOOK
+      // ==============================
+
+      let hook = "";
+      let hookError = "";
+
+      if (transcript.trim()) {
+
+        const wordCount =
+          transcript
+            .trim()
+            .split(/\s+/)
+            .length;
+
+        if (wordCount < 8) {
+
+          hook =
+            transcript.trim();
+
+        } else {
+
+          try {
+
+            const hookAI =
+              await env.AI.run(
+                "@cf/meta/llama-3.1-8b-instruct-fast",
                 {
-                    method: "POST",
-                    body: formData
+                  messages: [
+
+                    {
+                      role: "system",
+
+                      content:
+                        `You are a strict viral short-form video editor.
+
+Create ONE short spoken hook for the video.
+
+The transcript is the ONLY source of truth.
+
+NEVER invent or assume:
+- people
+- family
+- relationships
+- secrets
+- locations
+- events
+- motivations
+- emotions
+- backstory
+- outcomes
+- context
+
+Never claim something happened unless
+the transcript explicitly says it happened.
+
+Never invent a story around the transcript.
+
+The hook should create curiosity using
+ONLY information actually contained in
+the transcript.
+
+Keep it 2 to 6 seconds when spoken.
+
+Return ONLY the hook text.
+
+If there isn't enough information,
+return a short sentence directly from
+the transcript.`
+                    },
+
+                    {
+                      role: "user",
+
+                      content:
+                        "TRANSCRIPT:\n\n" +
+                        transcript
+                    }
+
+                  ],
+
+                  max_tokens: 60,
+
+                  temperature: 0.1
                 }
-            );
+              );
+
+            hook =
+              (hookAI.response || "")
+                .trim()
+                .replace(/^["']|["']$/g, "");
+
+          } catch (error) {
+
+            hookError =
+              error.message ||
+              "Hook generation failed.";
+
+          }
+
+        }
+
+      }
 
 
-        const responseText =
-            await response.text();
+      // ==============================
+      // VIRAL CLIP ANALYSIS
+      // ==============================
 
+      let viralClips = [];
+      let viralError = "";
 
-        let data;
-
+      if (segments.length > 0) {
 
         try {
 
-            data =
-                JSON.parse(responseText);
+          const timestampedTranscript =
+            segments
+              .map(segment => {
 
-        }
+                return (
+                  `[${formatTime(segment.start)} - ` +
+                  `${formatTime(segment.end)}] ` +
+                  `${segment.text || ""}`
+                );
 
-        catch {
+              })
+              .join("\n");
 
-            throw new Error(
-                "Worker returned an invalid response: "
-                + responseText
+
+          const viralAI =
+            await env.AI.run(
+              "@cf/meta/llama-3.1-8b-instruct-fast",
+              {
+
+                messages: [
+
+                  {
+                    role: "system",
+
+                    content:
+                      `You are an expert short-form video editor.
+
+Analyze the timestamped transcript and
+identify up to 3 strong potential viral moments.
+
+Look for:
+- surprising statements
+- funny moments
+- emotional moments
+- arguments
+- interesting stories
+- useful information
+- strong reactions
+- curiosity
+- satisfying payoffs
+- memorable moments
+
+Choose the clip length naturally.
+
+Do NOT make every clip the same length.
+
+Each clip must be between 10 and 60 seconds.
+
+CRITICAL:
+Only use information explicitly contained
+in the transcript.
+
+NEVER invent events, people, context,
+backstory or outcomes.
+
+Every start and end time MUST come
+from the supplied transcript timestamps.
+
+Return ONLY valid JSON.
+
+Format:
+
+[
+  {
+    "score": 95,
+    "start": 12.5,
+    "end": 41.2,
+    "reason": "Why this moment could perform well",
+    "hook": "A truthful hook based on the transcript"
+  }
+]
+
+If there are no meaningful moments,
+return [].
+
+Do not use markdown.
+Do not use code fences.`
+                  },
+
+                  {
+                    role: "user",
+
+                    content:
+                      "TIMESTAMPED TRANSCRIPT:\n\n" +
+                      timestampedTranscript
+                  }
+
+                ],
+
+                max_tokens: 600,
+
+                temperature: 0.2
+
+              }
             );
 
-        }
+
+          let raw =
+            viralAI.response || "";
 
 
-        if (!response.ok) {
-
-            throw new Error(
-                data.error ||
-                "Worker returned an error."
-            );
-
-        }
-
-
-        status.innerText =
-            "✅ AI analysis complete!";
-
-        status.className =
-            "success";
+          raw =
+            raw
+              .trim()
+              .replace(/^```json/i, "")
+              .replace(/^```/i, "")
+              .replace(/```$/i, "")
+              .trim();
 
 
-        let viralHTML = "";
+          try {
 
+            viralClips =
+              JSON.parse(raw);
 
-        // ==============================
-        // VIRAL CLIPS
-        // ==============================
+            if (!Array.isArray(viralClips)) {
 
-        if (
-            data.viralClips &&
-            data.viralClips.length > 0
-        ) {
+              viralClips = [];
 
-            viralHTML = `
+              viralError =
+                "AI returned invalid clip data.";
 
-                <div class="clip">
-
-                    <h2>
-                        🔥 Viral Clips Found
-                    </h2>
-
-                    ${
-                        data.viralClips.map(
-                            (clip, index) => {
-
-                                return `
-
-                                    <div class="clip viral">
-
-                                        <h3>
-                                            🔥 Viral Clip #${index + 1}
-                                        </h3>
-
-                                        <div class="score">
-                                            ${escapeHTML(
-                                                clip.score
-                                            )}/100
-                                        </div>
-
-                                        <div class="score-label">
-                                            Viral potential
-                                        </div>
-
-                                        <div class="clip-time">
-                                            ⏱️
-                                            ${formatTime(
-                                                clip.start
-                                            )}
-                                            →
-                                            ${formatTime(
-                                                clip.end
-                                            )}
-                                        </div>
-
-                                        ${
-                                            clip.hook
-                                            ?
-                                            `
-                                            <p>
-                                                🪝 <strong>
-                                                ${escapeHTML(
-                                                    clip.hook
-                                                )}
-                                                </strong>
-                                            </p>
-                                            `
-                                            :
-                                            ""
-                                        }
-
-                                        <p class="reason">
-                                            ${escapeHTML(
-                                                clip.reason ||
-                                                "Strong potential moment."
-                                            )}
-                                        </p>
-
-                                    </div>
-
-                                `;
-
-                            }
-                        ).join("")
-                    }
-
-                </div>
-
-            `;
-
-        }
-
-
-        // ==============================
-        // HOOK + TRANSCRIPT
-        // ==============================
-
-        results.innerHTML = `
-
-            ${viralHTML}
-
-
-            ${
-                data.hook
-                ?
-                `
-                <div class="clip">
-
-                    <div class="hook-label">
-                        🧠 AI-GENERATED HOOK
-                    </div>
-
-                    <div class="hook">
-                        ${escapeHTML(
-                            data.hook
-                        )}
-                    </div>
-
-                </div>
-                `
-                :
-                ""
             }
 
+          } catch {
 
-            <div class="clip">
+            viralClips = [];
 
-                <h3>
-                    🎙️ AI Transcript
-                </h3>
+            viralError =
+              "AI returned invalid JSON.";
 
-                <p class="transcript">
-                    ${escapeHTML(
-                        data.transcript ||
-                        "No speech was detected."
-                    )}
-                </p>
+          }
 
-            </div>
+        } catch (error) {
 
-        `;
+          viralError =
+            error.message ||
+            "Viral analysis failed.";
 
+        }
+
+      }
+
+
+      // ==============================
+      // SAFETY CHECK CLIP TIMESTAMPS
+      // ==============================
+
+      const safeClips =
+        viralClips
+          .filter(clip => {
+
+            return (
+              clip &&
+              Number.isFinite(
+                Number(clip.start)
+              ) &&
+              Number.isFinite(
+                Number(clip.end)
+              )
+            );
+
+          })
+          .map(clip => {
+
+            const start =
+              Math.max(
+                0,
+                Number(clip.start)
+              );
+
+            const end =
+              Math.max(
+                start,
+                Number(clip.end)
+              );
+
+            return {
+
+              score:
+                Math.min(
+                  100,
+                  Math.max(
+                    0,
+                    Number(clip.score) || 0
+                  )
+                ),
+
+              start:
+                start,
+
+              end:
+                end,
+
+              reason:
+                clip.reason || "",
+
+              hook:
+                clip.hook || ""
+
+            };
+
+          });
+
+
+      // ==============================
+      // RETURN RESULTS
+      // ==============================
+
+      return json(
+        {
+
+          success: true,
+
+          ai: true,
+
+          transcript:
+            transcript,
+
+          segments:
+            segments,
+
+          words:
+            words,
+
+          hook:
+            hook,
+
+          hookError:
+            hookError,
+
+          viralClips:
+            safeClips,
+
+          viralError:
+            viralError
+
+        },
+        200,
+        cors
+      );
+
+
+    } catch (error) {
+
+      return json(
+        {
+          success: false,
+
+          error:
+            error.message ||
+            "AI processing failed."
+        },
+        500,
+        cors
+      );
 
     }
 
-    catch (error) {
-
-
-        console.error(
-            "ClipAI error:",
-            error
-        );
-
-
-        status.innerText =
-            "Could not connect to ClipAI.";
-
-        status.className =
-            "error";
-
-
-        results.innerHTML = `
-
-            <div class="clip">
-
-                <h3>
-                    ❌ Connection Error
-                </h3>
-
-                <p>
-                    ${escapeHTML(
-                        error.message
-                    )}
-                </p>
-
-            </div>
-
-        `;
-
-    }
-
-
-    button.disabled = false;
-
-}
+  }
+};
 
 
 function formatTime(seconds) {
 
-    seconds =
-        Number(seconds) || 0;
+  seconds =
+    Number(seconds) || 0;
 
+  const minutes =
+    Math.floor(seconds / 60);
 
-    const minutes =
-        Math.floor(
-            seconds / 60
-        );
+  const remaining =
+    Math.floor(seconds % 60);
 
-
-    const remaining =
-        Math.floor(
-            seconds % 60
-        );
-
-
-    return (
-        String(minutes).padStart(2, "0") +
-        ":" +
-        String(remaining).padStart(2, "0")
-    );
+  return (
+    String(minutes).padStart(2, "0") +
+    ":" +
+    String(remaining).padStart(2, "0")
+  );
 
 }
 
 
-function escapeHTML(text) {
+function json(data, status, cors) {
 
-    return String(text)
+  return new Response(
+    JSON.stringify(data),
+    {
+      status: status,
 
-        .replaceAll("&", "&amp;")
+      headers: {
+        "Content-Type":
+          "application/json",
 
-        .replaceAll("<", "&lt;")
-
-        .replaceAll(">", "&gt;")
-
-        .replaceAll('"', "&quot;")
-
-        .replaceAll("'", "&#039;");
+        ...cors
+      }
+    }
+  );
 
 }
-
-
-</script>
-
-
-</body>
-
-</html>
