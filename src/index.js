@@ -14,11 +14,7 @@ export default {
     }
 
     if (request.method !== "POST") {
-      return json(
-        { error: "Use POST" },
-        405,
-        cors
-      );
+      return json({ error: "Use POST" }, 405, cors);
     }
 
     try {
@@ -29,31 +25,22 @@ export default {
       const audio =
         formData.get("audio");
 
-
       if (!audio) {
-
-        return json(
-          {
-            error:
-              "No audio/video file received."
-          },
-          400,
-          cors
-        );
-
+        return json({
+          error: "No audio/video file received."
+        }, 400, cors);
       }
 
+
+      // ==============================
+      // WHISPER
+      // ==============================
 
       const audioBuffer =
         await audio.arrayBuffer();
 
       const audioBytes =
         [...new Uint8Array(audioBuffer)];
-
-
-      // ==============================
-      // 1. WHISPER
-      // ==============================
 
       const transcription =
         await env.AI.run(
@@ -63,27 +50,25 @@ export default {
           }
         );
 
-
       const transcript =
         transcription.text || "";
 
+      const segments =
+        transcription.segments || [];
+
 
       // ==============================
-      // 2. AI HOOK
+      // AI HOOK
       // ==============================
 
-      let hook =
-        "";
-
-      let hookError =
-        "";
-
+      let hook = "";
+      let hookError = "";
 
       if (transcript.trim()) {
 
         try {
 
-          const aiResponse =
+          const hookAI =
             await env.AI.run(
               "@cf/meta/llama-3.1-8b-instruct-fast",
               {
@@ -94,15 +79,12 @@ export default {
                     role: "system",
 
                     content:
-                      "You are an expert viral video editor. " +
-                      "Create ONE extremely engaging opening hook " +
-                      "for a short-form video. " +
-                      "The hook must be based ONLY on the transcript. " +
-                      "Do not invent facts. " +
-                      "Do not reveal the ending. " +
-                      "Make the viewer curious. " +
-                      "It should take about 2 to 6 seconds to say. " +
-                      "Return ONLY the spoken hook."
+                      "You are a viral short-form video editor. " +
+                      "Create ONE short spoken hook for the beginning " +
+                      "of the video. Make it curiosity-driven, truthful " +
+                      "and based only on the transcript. " +
+                      "It should take 2 to 6 seconds to say. " +
+                      "Return ONLY the hook."
                   },
 
                   {
@@ -110,35 +92,21 @@ export default {
 
                     content:
                       "Transcript:\n\n" +
-                      transcript +
-                      "\n\n" +
-                      "Write the viral hook now."
+                      transcript
                   }
 
                 ],
 
                 max_tokens: 80,
-
                 temperature: 0.7
 
               }
             );
 
-
             hook =
-              aiResponse.response ||
-              "";
-
-
-            /*
-             * Remove accidental quotation marks
-             */
-
-            hook =
-              hook
+              (hookAI.response || "")
                 .trim()
                 .replace(/^["']|["']$/g, "");
-
 
           }
 
@@ -154,7 +122,143 @@ export default {
 
 
       // ==============================
-      // 3. RETURN EVERYTHING
+      // VIRAL CLIP ANALYSIS
+      // ==============================
+
+      let viralClips = [];
+      let viralError = "";
+
+
+      if (segments.length > 0) {
+
+        try {
+
+          const timestampedTranscript =
+            segments.map(
+              (segment, index) => {
+
+                return (
+                  `[${formatTime(segment.start)} - ` +
+                  `${formatTime(segment.end)}] ` +
+                  `${segment.text}`
+                );
+
+              }
+            ).join("\n");
+
+
+          const viralAI =
+            await env.AI.run(
+              "@cf/meta/llama-3.1-8b-instruct-fast",
+              {
+
+                messages: [
+
+                  {
+                    role: "system",
+
+                    content:
+                      `You are an expert viral video editor.
+
+Analyze the timestamped transcript and find up to 3
+of the strongest short-form video moments.
+
+Look for:
+- strong hooks
+- surprising statements
+- emotional moments
+- funny moments
+- arguments or tension
+- useful information
+- strong stories
+- curiosity
+- satisfying payoffs
+
+The clip length should be chosen naturally.
+Do NOT force every clip to the same length.
+
+Each clip must be between 10 and 60 seconds.
+
+Return ONLY valid JSON in this exact format:
+
+[
+  {
+    "score": 95,
+    "start": 12.5,
+    "end": 41.2,
+    "reason": "Strong curiosity and payoff",
+    "hook": "Short hook for this clip"
+  }
+]
+
+Do not include markdown.
+Do not include code fences.`
+
+                  },
+
+                  {
+                    role: "user",
+
+                    content:
+                      "Timestamped transcript:\n\n" +
+                      timestampedTranscript
+                  }
+
+                ],
+
+                max_tokens: 500,
+
+                temperature: 0.5
+
+              }
+            );
+
+
+          let raw =
+            viralAI.response || "";
+
+
+          raw =
+            raw
+              .trim()
+              .replace(/^```json/i, "")
+              .replace(/^```/i, "")
+              .replace(/```$/i, "")
+              .trim();
+
+
+          try {
+
+            viralClips =
+              JSON.parse(raw);
+
+          }
+
+          catch {
+
+            viralClips = [];
+
+            viralError =
+              "AI returned invalid clip data.";
+
+          }
+
+
+        }
+
+        catch (error) {
+
+          viralError =
+            error.message ||
+            "Viral analysis failed.";
+
+        }
+
+      }
+
+
+      // ==============================
+      // RETURN RESULTS
       // ==============================
 
       return json({
@@ -166,22 +270,23 @@ export default {
         transcript:
           transcript,
 
+        segments:
+          segments,
+
+        words:
+          transcription.words || [],
+
         hook:
           hook,
 
         hookError:
           hookError,
 
-        segments:
-          transcription.segments || [],
+        viralClips:
+          viralClips,
 
-        words:
-          transcription.words || [],
-
-        message:
-          hook
-            ? "Transcript and AI hook generated."
-            : "Transcript generated but no hook was returned."
+        viralError:
+          viralError
 
       }, 200, cors);
 
@@ -204,6 +309,26 @@ export default {
 
   }
 };
+
+
+function formatTime(seconds) {
+
+  seconds =
+    Number(seconds) || 0;
+
+  const minutes =
+    Math.floor(seconds / 60);
+
+  const remaining =
+    Math.floor(seconds % 60);
+
+  return (
+    String(minutes).padStart(2, "0") +
+    ":" +
+    String(remaining).padStart(2, "0")
+  );
+
+}
 
 
 function json(data, status, cors) {
