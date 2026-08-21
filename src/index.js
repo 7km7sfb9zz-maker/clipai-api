@@ -14,9 +14,11 @@ export default {
     }
 
     if (request.method !== "POST") {
-      return json({
-        error: "Use POST"
-      }, 405, cors);
+      return json(
+        { error: "Use POST" },
+        405,
+        cors
+      );
     }
 
     try {
@@ -28,9 +30,13 @@ export default {
         formData.get("audio");
 
       if (!audio) {
-        return json({
-          error: "No audio/video file received."
-        }, 400, cors);
+
+        return json(
+          { error: "No video/audio file received." },
+          400,
+          cors
+        );
+
       }
 
       const audioBuffer =
@@ -39,12 +45,6 @@ export default {
       const audioBytes =
         [...new Uint8Array(audioBuffer)];
 
-      console.log(
-        "Received file:",
-        audio.name,
-        "Size:",
-        audioBuffer.byteLength
-      );
 
       const result =
         await env.AI.run(
@@ -54,6 +54,13 @@ export default {
           }
         );
 
+
+      /*
+       * Return the transcript plus
+       * whatever timestamp information
+       * Whisper provides.
+       */
+
       return json({
 
         success: true,
@@ -61,14 +68,19 @@ export default {
         transcript:
           result.text || "",
 
+        segments:
+          result.segments || [],
+
+        words:
+          result.words || [],
+
         message:
           "Whisper transcription complete."
 
       }, 200, cors);
 
-    }
 
-    catch (error) {
+    } catch (error) {
 
       console.error(error);
 
@@ -76,7 +88,7 @@ export default {
 
         error:
           error.message ||
-          "Whisper transcription failed."
+          "Transcription failed."
 
       }, 500, cors);
 
