@@ -21,62 +21,38 @@ export default {
 
     try {
 
-      const contentType =
-        request.headers.get("content-type") || "";
-
-
-      /*
-       * We expect the website to send
-       * the video's audio as multipart/form-data.
-       */
-
-      if (!contentType.includes("multipart/form-data")) {
-
-        return json({
-          error: "Expected multipart/form-data"
-        }, 400, cors);
-
-      }
-
-
       const formData =
         await request.formData();
-
 
       const audio =
         formData.get("audio");
 
-
-      if (!audio || typeof audio.arrayBuffer !== "function") {
-
+      if (!audio) {
         return json({
-          error: "No audio file received"
+          error: "No audio/video file received."
         }, 400, cors);
-
       }
-
-
-      /*
-       * Convert the uploaded audio into
-       * an ArrayBuffer for Workers AI.
-       */
 
       const audioBuffer =
         await audio.arrayBuffer();
 
+      const audioBytes =
+        [...new Uint8Array(audioBuffer)];
 
-      /*
-       * Send the audio to Whisper.
-       */
+      console.log(
+        "Received file:",
+        audio.name,
+        "Size:",
+        audioBuffer.byteLength
+      );
 
       const result =
         await env.AI.run(
           "@cf/openai/whisper",
           {
-            audio: [...new Uint8Array(audioBuffer)]
+            audio: audioBytes
           }
         );
-
 
       return json({
 
@@ -90,17 +66,17 @@ export default {
 
       }, 200, cors);
 
+    }
 
-    } catch (error) {
+    catch (error) {
 
       console.error(error);
-
 
       return json({
 
         error:
           error.message ||
-          "Transcription failed."
+          "Whisper transcription failed."
 
       }, 500, cors);
 
@@ -113,24 +89,15 @@ export default {
 function json(data, status, cors) {
 
   return new Response(
-
     JSON.stringify(data),
-
     {
-
       status: status,
-
       headers: {
-
         "Content-Type":
           "application/json",
-
         ...cors
-
       }
-
     }
-
   );
 
 }
