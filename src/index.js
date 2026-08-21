@@ -23,6 +23,10 @@ export default {
 
     try {
 
+      // ==========================================
+      // RECEIVE AUDIO CHUNK
+      // ==========================================
+
       const formData =
         await request.formData();
 
@@ -47,9 +51,9 @@ export default {
         [...new Uint8Array(audioBuffer)];
 
 
-      // ==============================
-      // WHISPER TRANSCRIPTION
-      // ==============================
+      // ==========================================
+      // WHISPER
+      // ==========================================
 
       const transcription =
         await env.AI.run(
@@ -69,50 +73,119 @@ export default {
         transcription.words || [];
 
 
-      // ==============================
-      // AI HOOK
-      // ==============================
+      // ==========================================
+      // DEFAULT RESULTS
+      // ==========================================
 
       let hook = "";
+
       let hookError = "";
 
-      if (transcript.trim()) {
+      let viralClips = [];
 
-        const wordCount =
-          transcript
-            .trim()
-            .split(/\s+/)
-            .length;
+      let viralError = "";
 
-        if (wordCount < 8) {
 
-          hook =
-            transcript.trim();
+      // ==========================================
+      // NOTHING SPOKEN
+      // ==========================================
 
-        } else {
+      if (!transcript.trim()) {
 
-          try {
+        return json(
+          {
+            success: true,
+            ai: true,
+            transcript: "",
+            segments: [],
+            words: [],
+            hook: "",
+            hookError: "",
+            viralClips: [],
+            viralError: "No speech detected."
+          },
+          200,
+          cors
+        );
 
-            const hookAI =
-              await env.AI.run(
-                "@cf/meta/llama-3.1-8b-instruct-fast",
+      }
+
+
+      // ==========================================
+      // BUILD TIMESTAMPED TRANSCRIPT
+      // ==========================================
+
+      const timestampedTranscript =
+        segments
+          .map(segment => {
+
+            const start =
+              Number(segment.start) || 0;
+
+            const end =
+              Number(segment.end) || start;
+
+            const text =
+              segment.text || "";
+
+            return (
+              `[${formatTime(start)} - ` +
+              `${formatTime(end)}] ` +
+              `${text}`
+            );
+
+          })
+          .join("\n");
+
+
+      // ==========================================
+      // VIRAL MOMENT ANALYSIS
+      // ==========================================
+
+      try {
+
+        const viralAI =
+          await env.AI.run(
+            "@cf/meta/llama-3.1-8b-instruct-fast",
+            {
+
+              messages: [
+
                 {
-                  messages: [
+                  role: "system",
 
-                    {
-                      role: "system",
+                  content:
+                    `You are ClipAI, an expert viral short-form video editor.
 
-                      content:
-                        `You are a strict viral short-form video editor.
+Your job is to find the BEST moments inside a video transcript that could become TikTok, YouTube Shorts or Instagram Reels clips.
 
-Create ONE short spoken hook for the video.
+Analyze the transcript carefully.
 
-The transcript is the ONLY source of truth.
+Look especially for:
 
-NEVER invent or assume:
+- surprising statements
+- funny moments
+- emotional reactions
+- arguments
+- controversial statements
+- unusual facts
+- stories
+- strong opinions
+- unexpected twists
+- impressive information
+- satisfying explanations
+- moments that create curiosity
+- moments where someone says something memorable
+- moments with a natural beginning and payoff
+
+IMPORTANT:
+
+Only use information explicitly contained in the transcript.
+
+NEVER invent:
 - people
-- family
 - relationships
+- family
 - secrets
 - locations
 - events
@@ -120,46 +193,371 @@ NEVER invent or assume:
 - emotions
 - backstory
 - outcomes
-- context
 
-Never claim something happened unless
-the transcript explicitly says it happened.
+Do not turn an ordinary sentence into a fake dramatic story.
 
-Never invent a story around the transcript.
+Choose up to 3 of the strongest moments.
 
-The hook should create curiosity using
-ONLY information actually contained in
-the transcript.
+A clip should normally be between 10 and 60 seconds.
 
-Keep it 2 to 6 seconds when spoken.
+Do NOT make every clip the same length.
 
-Return ONLY the hook text.
+Prefer clips that have a clear reason someone would keep watching.
 
-If there isn't enough information,
-return a short sentence directly from
-the transcript.`
+The timestamps MUST come from the supplied transcript.
+
+The clip start should begin slightly before the important statement when possible.
+
+The clip end should include the natural conclusion or payoff.
+
+Give each clip a viral potential score from 0 to 100.
+
+Scoring:
+
+90-100 = extremely strong viral potential
+75-89 = strong potential
+60-74 = decent potential
+40-59 = weak
+0-39 = not worth clipping
+
+Do not give high scores simply because something exists.
+
+Return ONLY valid JSON.
+
+Use exactly this structure:
+
+[
+  {
+    "score": 92,
+    "start": 12.5,
+    "end": 42.8,
+    "reason": "Short explanation of why this moment is compelling.",
+    "hook": "A truthful short hook based only on what was said."
+  }
+]
+
+If there are no genuinely interesting moments, return:
+
+[]
+
+Do not use markdown.
+Do not use code fences.
+Do not write anything outside the JSON array.`
+                },
+
+                {
+                  role: "user",
+
+                  content:
+                    "TIMESTAMPED TRANSCRIPT:\n\n" +
+                    timestampedTranscript
+                }
+
+              ],
+
+              max_tokens: 800,
+
+              temperature: 0.15
+
+            }
+          );
+
+
+        let raw =
+          viralAI.response || "";
+
+
+        raw =
+          raw
+            .trim()
+            .replace(/^```json/i, "")
+            .replace(/^```/i, "")
+            .replace(/```$/i, "")
+            .trim();
+
+
+        try {
+
+          viralClips =
+            JSON.parse(raw);
+
+          if (!Array.isArray(viralClips)) {
+
+            viralClips = [];
+
+            viralError =
+              "AI returned invalid clip data.";
+
+          }
+
+        } catch {
+
+          viralClips = [];
+
+          viralError =
+            "AI returned invalid JSON.";
+
+        }
+
+      } catch (error) {
+
+        viralError =
+          error.message ||
+          "Viral analysis failed.";
+
+      }
+
+
+      // ==========================================
+      // SAFELY VALIDATE VIRAL CLIPS
+      // ==========================================
+
+      const safeClips =
+        viralClips
+
+          .filter(clip => {
+
+            if (!clip) {
+              return false;
+            }
+
+            const start =
+              Number(clip.start);
+
+            const end =
+              Number(clip.end);
+
+            if (
+              !Number.isFinite(start) ||
+              !Number.isFinite(end)
+            ) {
+              return false;
+            }
+
+            if (end <= start) {
+              return false;
+            }
+
+            return true;
+
+          })
+
+          .map(clip => {
+
+            let start =
+              Math.max(
+                0,
+                Number(clip.start)
+              );
+
+            let end =
+              Math.max(
+                start,
+                Number(clip.end)
+              );
+
+
+            // Prevent absurdly long clips.
+
+            if (
+              end - start >
+              60
+            ) {
+
+              end =
+                start + 60;
+
+            }
+
+
+            let score =
+              Number(clip.score);
+
+
+            if (!Number.isFinite(score)) {
+              score = 0;
+            }
+
+
+            score =
+              Math.round(
+                Math.min(
+                  100,
+                  Math.max(
+                    0,
+                    score
+                  )
+                )
+              );
+
+
+            return {
+
+              score:
+
+                score,
+
+              start:
+
+                start,
+
+              end:
+
+                end,
+
+              duration:
+
+                Math.round(
+                  (
+                    end -
+                    start
+                  ) * 10
+                ) / 10,
+
+              reason:
+
+                String(
+                  clip.reason ||
+                  "Potentially interesting moment."
+                ),
+
+              hook:
+
+                String(
+                  clip.hook ||
+                  ""
+                )
+
+            };
+
+          })
+
+          .sort(
+            (a, b) =>
+              b.score -
+              a.score
+          )
+
+          .slice(
+            0,
+            3
+          );
+
+
+      // ==========================================
+      // GENERATE HOOK FOR THE BEST MOMENT
+      // ==========================================
+
+      if (
+        safeClips.length > 0
+      ) {
+
+        const bestClip =
+          safeClips[0];
+
+
+        const bestText =
+          segments
+
+            .filter(segment => {
+
+              const start =
+                Number(segment.start) || 0;
+
+              const end =
+                Number(segment.end) || start;
+
+              return (
+                end >=
+                  bestClip.start &&
+                start <=
+                  bestClip.end
+              );
+
+            })
+
+            .map(
+              segment =>
+                segment.text || ""
+            )
+
+            .join(" ");
+
+
+        if (
+          bestText.trim()
+        ) {
+
+          try {
+
+            const hookAI =
+              await env.AI.run(
+                "@cf/meta/llama-3.1-8b-instruct-fast",
+                {
+
+                  messages: [
+
+                    {
+                      role: "system",
+
+                      content:
+                        `You create short-form video hooks.
+
+Create ONE short spoken hook for the selected video moment.
+
+The hook MUST be truthful.
+
+Use ONLY information explicitly contained in the supplied text.
+
+Do not invent:
+- secrets
+- people
+- relationships
+- drama
+- backstory
+- outcomes
+- motivations
+
+Create curiosity without lying.
+
+Keep it short enough to speak in approximately 2-6 seconds.
+
+Return ONLY the hook.
+
+No quotation marks.
+No explanation.`
                     },
 
                     {
                       role: "user",
 
                       content:
-                        "TRANSCRIPT:\n\n" +
-                        transcript
+                        "SELECTED MOMENT:\n\n" +
+                        bestText
                     }
 
                   ],
 
                   max_tokens: 60,
 
-                  temperature: 0.1
+                  temperature: 0.15
+
                 }
               );
 
+
             hook =
-              (hookAI.response || "")
+              (
+                hookAI.response ||
+                bestClip.hook ||
+                ""
+              )
                 .trim()
-                .replace(/^["']|["']$/g, "");
+                .replace(
+                  /^["']|["']$/g,
+                  ""
+                );
+
 
           } catch (error) {
 
@@ -167,6 +565,10 @@ the transcript.`
               error.message ||
               "Hook generation failed.";
 
+            hook =
+              bestClip.hook ||
+              "";
+
           }
 
         }
@@ -174,232 +576,46 @@ the transcript.`
       }
 
 
-      // ==============================
-      // VIRAL CLIP ANALYSIS
-      // ==============================
+      // ==========================================
+      // FALLBACK HOOK
+      // ==========================================
 
-      let viralClips = [];
-      let viralError = "";
+      if (
+        !hook.trim() &&
+        transcript.trim()
+      ) {
 
-      if (segments.length > 0) {
-
-        try {
-
-          const timestampedTranscript =
-            segments
-              .map(segment => {
-
-                return (
-                  `[${formatTime(segment.start)} - ` +
-                  `${formatTime(segment.end)}] ` +
-                  `${segment.text || ""}`
-                );
-
-              })
-              .join("\n");
+        const wordCount =
+          transcript
+            .trim()
+            .split(/\s+/)
+            .length;
 
 
-          const viralAI =
-            await env.AI.run(
-              "@cf/meta/llama-3.1-8b-instruct-fast",
-              {
+        if (
+          wordCount <= 12
+        ) {
 
-                messages: [
-
-                  {
-                    role: "system",
-
-                    content:
-                      `You are an expert short-form video editor.
-
-Analyze the timestamped transcript and
-identify up to 3 strong potential viral moments.
-
-Look for:
-- surprising statements
-- funny moments
-- emotional moments
-- arguments
-- interesting stories
-- useful information
-- strong reactions
-- curiosity
-- satisfying payoffs
-- memorable moments
-
-Choose the clip length naturally.
-
-Do NOT make every clip the same length.
-
-Each clip must be between 10 and 60 seconds.
-
-CRITICAL:
-Only use information explicitly contained
-in the transcript.
-
-NEVER invent events, people, context,
-backstory or outcomes.
-
-Every start and end time MUST come
-from the supplied transcript timestamps.
-
-Return ONLY valid JSON.
-
-Format:
-
-[
-  {
-    "score": 95,
-    "start": 12.5,
-    "end": 41.2,
-    "reason": "Why this moment could perform well",
-    "hook": "A truthful hook based on the transcript"
-  }
-]
-
-If there are no meaningful moments,
-return [].
-
-Do not use markdown.
-Do not use code fences.`
-                  },
-
-                  {
-                    role: "user",
-
-                    content:
-                      "TIMESTAMPED TRANSCRIPT:\n\n" +
-                      timestampedTranscript
-                  }
-
-                ],
-
-                max_tokens: 600,
-
-                temperature: 0.2
-
-              }
-            );
-
-
-          let raw =
-            viralAI.response || "";
-
-
-          raw =
-            raw
-              .trim()
-              .replace(/^```json/i, "")
-              .replace(/^```/i, "")
-              .replace(/```$/i, "")
-              .trim();
-
-
-          try {
-
-            viralClips =
-              JSON.parse(raw);
-
-            if (!Array.isArray(viralClips)) {
-
-              viralClips = [];
-
-              viralError =
-                "AI returned invalid clip data.";
-
-            }
-
-          } catch {
-
-            viralClips = [];
-
-            viralError =
-              "AI returned invalid JSON.";
-
-          }
-
-        } catch (error) {
-
-          viralError =
-            error.message ||
-            "Viral analysis failed.";
+          hook =
+            transcript.trim();
 
         }
 
       }
 
 
-      // ==============================
-      // SAFETY CHECK CLIP TIMESTAMPS
-      // ==============================
-
-      const safeClips =
-        viralClips
-          .filter(clip => {
-
-            return (
-              clip &&
-              Number.isFinite(
-                Number(clip.start)
-              ) &&
-              Number.isFinite(
-                Number(clip.end)
-              )
-            );
-
-          })
-          .map(clip => {
-
-            const start =
-              Math.max(
-                0,
-                Number(clip.start)
-              );
-
-            const end =
-              Math.max(
-                start,
-                Number(clip.end)
-              );
-
-            return {
-
-              score:
-                Math.min(
-                  100,
-                  Math.max(
-                    0,
-                    Number(clip.score) || 0
-                  )
-                ),
-
-              start:
-                start,
-
-              end:
-                end,
-
-              reason:
-                clip.reason || "",
-
-              hook:
-                clip.hook || ""
-
-            };
-
-          });
-
-
-      // ==============================
-      // RETURN RESULTS
-      // ==============================
+      // ==========================================
+      // RETURN EVERYTHING
+      // ==========================================
 
       return json(
         {
 
-          success: true,
+          success:
+            true,
 
-          ai: true,
+          ai:
+            true,
 
           transcript:
             transcript,
@@ -420,7 +636,23 @@ Do not use code fences.`
             safeClips,
 
           viralError:
-            viralError
+            viralError,
+
+          // Useful information for
+          // the frontend.
+
+          clipCount:
+            safeClips.length,
+
+          bestScore:
+            safeClips.length > 0
+              ? safeClips[0].score
+              : 0,
+
+          bestClip:
+            safeClips.length > 0
+              ? safeClips[0]
+              : null
 
         },
         200,
@@ -432,11 +664,14 @@ Do not use code fences.`
 
       return json(
         {
-          success: false,
+
+          success:
+            false,
 
           error:
             error.message ||
             "AI processing failed."
+
         },
         500,
         cors
@@ -448,39 +683,66 @@ Do not use code fences.`
 };
 
 
+// ==========================================
+// FORMAT TIME
+// ==========================================
+
 function formatTime(seconds) {
 
   seconds =
     Number(seconds) || 0;
 
+
   const minutes =
-    Math.floor(seconds / 60);
+    Math.floor(
+      seconds / 60
+    );
+
 
   const remaining =
-    Math.floor(seconds % 60);
+    Math.floor(
+      seconds % 60
+    );
+
 
   return (
-    String(minutes).padStart(2, "0") +
+    String(minutes)
+      .padStart(2, "0") +
     ":" +
-    String(remaining).padStart(2, "0")
+    String(remaining)
+      .padStart(2, "0")
   );
 
 }
 
 
-function json(data, status, cors) {
+// ==========================================
+// JSON RESPONSE
+// ==========================================
+
+function json(
+  data,
+  status,
+  cors
+) {
 
   return new Response(
     JSON.stringify(data),
     {
-      status: status,
+
+      status:
+
+        status,
 
       headers: {
+
         "Content-Type":
           "application/json",
 
         ...cors
+
       }
+
     }
   );
 
