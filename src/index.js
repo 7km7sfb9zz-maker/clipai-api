@@ -157,8 +157,27 @@ export default {
                   {
                     role: "system",
 
-                    content:
-                      `You are an expert viral video editor.
+                 content:
+  "You are a viral short-form video editor. " +
+
+  "Create ONE short spoken hook based ONLY " +
+  "on information explicitly contained in the transcript. " +
+
+  "CRITICAL RULES: " +
+
+  "Never invent people, events, facts, context, " +
+  "relationships, outcomes or details. " +
+
+  "Never assume what the video is about. " +
+
+  "If the transcript is too short or lacks enough " +
+  "context to create a meaningful hook, return " +
+  "the transcript itself or a simple curiosity-based " +
+  "hook that does not add new information. " +
+
+  "The hook must take 2 to 6 seconds to say. " +
+
+  "Return ONLY the hook."
 
 Analyze the timestamped transcript and find up to 3
 of the strongest short-form video moments.
