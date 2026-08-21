@@ -8,43 +8,33 @@ export default {
     };
 
     if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: cors
-      });
+      return new Response(null, { headers: cors });
     }
 
     if (request.method !== "POST") {
-      return json(
-        { error: "Use POST" },
-        405,
-        cors
-      );
+      return json({ error: "Use POST" }, 405, cors);
     }
 
     try {
 
       const formData = await request.formData();
-
       const audio = formData.get("audio");
 
       if (!audio) {
-        return json(
-          { error: "No video/audio file received." },
-          400,
-          cors
-        );
+        return json({
+          error: "No audio/video file received."
+        }, 400, cors);
       }
 
-      const audioBuffer =
-        await audio.arrayBuffer();
+      const audioBuffer = await audio.arrayBuffer();
 
       const audioBytes =
         [...new Uint8Array(audioBuffer)];
 
 
-      // =====================================
-      // 1. WHISPER TRANSCRIPTION
-      // =====================================
+      // ==============================
+      // WHISPER
+      // ==============================
 
       const transcription =
         await env.AI.run(
@@ -54,76 +44,74 @@ export default {
           }
         );
 
-
       const transcript =
         transcription.text || "";
 
 
-      // =====================================
-      // 2. AI VIRAL HOOK
-      // =====================================
+      // ==============================
+      // AI HOOK
+      // ==============================
 
       let hook = "";
+
+      let hookError = "";
 
 
       if (transcript.trim()) {
 
-        const aiResponse =
-          await env.AI.run(
-            "@cf/meta/llama-3.1-8b-instruct-fast",
-            {
-              messages: [
+        try {
 
-                {
-                  role: "system",
+          const aiResponse =
+            await env.AI.run(
+              "@cf/meta/llama-3.1-8b-instruct-fast",
+              {
+                messages: [
 
-                  content:
-                    `You create short hooks for
-TikTok, YouTube Shorts and Instagram Reels.
+                  {
+                    role: "system",
 
-Create ONE spoken hook for the beginning
-of this video.
+                    content:
+                      "You are a viral short-form video editor. " +
+                      "Write ONE short spoken hook for the beginning " +
+                      "of a TikTok, YouTube Short or Instagram Reel. " +
+                      "The hook should create curiosity and make people " +
+                      "want to keep watching. It must be truthful and " +
+                      "based only on the transcript. Keep it between " +
+                      "2 and 6 seconds when spoken. Return ONLY the hook."
+                  },
 
-Rules:
+                  {
+                    role: "user",
 
-- 2 to 6 seconds when spoken
-- Create curiosity
-- Make the viewer want to continue watching
-- Do not lie
-- Do not invent information
-- Do not reveal the ending
-- Sound natural
-- Do not use hashtags
-- Return ONLY the hook`
-                },
+                    content:
+                      "Video transcript:\n\n" +
+                      transcript +
+                      "\n\nWrite the hook now."
+                  }
 
-                {
-                  role: "user",
+                ],
 
-                  content:
-                    `Create a hook for this transcript:
+                max_tokens: 80,
 
-${transcript}`
-                }
-
-              ],
-
-              max_tokens: 80,
-
-              temperature: 0.7
-            }
-          );
+                temperature: 0.7
+              }
+            );
 
 
-        hook =
-          aiResponse.response || "";
+          hook =
+            aiResponse.response || "";
+
+
+        } catch (error) {
+
+          hookError =
+            error.message ||
+            "Hook generation failed.";
+
+        }
 
       }
 
-
-      // =====================================
-      // 3. RETURN RESULTS
-      // =====================================
 
       return json({
 
@@ -141,15 +129,13 @@ ${transcript}`
         hook:
           hook.trim(),
 
-        message:
-          "Whisper transcription and AI hook complete."
+        hookError:
+          hookError
 
       }, 200, cors);
 
 
     } catch (error) {
-
-      console.error(error);
 
       return json({
 
@@ -173,9 +159,7 @@ function json(data, status, cors) {
       status: status,
 
       headers: {
-        "Content-Type":
-          "application/json",
-
+        "Content-Type": "application/json",
         ...cors
       }
     }
