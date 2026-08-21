@@ -8,24 +8,51 @@ export default {
     };
 
     if (request.method === "OPTIONS") {
-      return new Response(null, { headers: cors });
+      return new Response(null, {
+        status: 204,
+        headers: cors
+      });
     }
 
     if (request.method !== "POST") {
-      return json({ error: "Use POST" }, 405, cors);
+      return json(
+        { error: "Use POST" },
+        405,
+        cors
+      );
     }
 
     try {
 
+      /*
+       * ==========================================
+       * ROUTE 1
+       * AUDIO CHUNK -> WHISPER
+       * ==========================================
+       */
+
       const contentType =
         request.headers.get("content-type") || "";
 
+      if (
+        contentType.includes("multipart/form-data")
+      ) {
 
-      // =====================================================
-      // SECOND AI ANALYSIS
-      // Frontend sends JSON:
-      // { action:"analyze", transcript, duration }
-      // =====================================================
+        return await handleAudioChunk(
+          request,
+          env,
+          cors
+        );
+
+      }
+
+
+      /*
+       * ==========================================
+       * ROUTE 2
+       * COMBINED TRANSCRIPT -> VIRAL ANALYSIS
+       * ==========================================
+       */
 
       if (
         contentType.includes("application/json")
@@ -35,12 +62,12 @@ export default {
           await request.json();
 
         if (
+          body &&
           body.action === "analyze"
         ) {
 
-          return await deepAnalysis(
-            body.transcript || "",
-            Number(body.duration) || 0,
+          return await handleAnalysis(
+            body,
             env,
             cors
           );
@@ -50,108 +77,29 @@ export default {
         return json(
           {
             success: false,
-            error: "Unknown JSON action."
+            error:
+              "Unknown action."
           },
           400,
           cors
         );
-      }
-
-
-      // =====================================================
-      // AUDIO TRANSCRIPTION
-      // =====================================================
-
-      const formData =
-        await request.formData();
-
-      const audio =
-        formData.get("audio");
-
-      if (!audio) {
-        return json(
-          {
-            success: false,
-            error:
-              "No audio file received."
-          },
-          400,
-          cors
-        );
-      }
-
-
-      const audioBuffer =
-        await audio.arrayBuffer();
-
-
-      const MAX_AUDIO_BYTES =
-        25 * 1024 * 1024;
-
-
-      if (
-        audioBuffer.byteLength >
-        MAX_AUDIO_BYTES
-      ) {
-
-        return json(
-          {
-            success: false,
-            error:
-              "Audio chunk is too large. Please use smaller chunks."
-          },
-          413,
-          cors
-        );
 
       }
-
-
-      const audioBytes =
-        [...new Uint8Array(audioBuffer)];
-
-
-      // =====================================================
-      // WHISPER
-      // =====================================================
-
-      const transcription =
-        await env.AI.run(
-          "@cf/openai/whisper-large-v3-turbo",
-          {
-            audio: audioBytes
-          }
-        );
-
-
-      const transcript =
-        transcription.text || "";
-
-
-      const segments =
-        transcription.segments || [];
-
-
-      const words =
-        transcription.words || [];
 
 
       return json(
         {
-          success: true,
-          ai: true,
-          transcript,
-          segments,
-          words
+          success: false,
+          error:
+            "Unsupported request type."
         },
-        200,
+        400,
         cors
       );
 
+    }
 
-    } catch (error) {
-
-      console.error(error);
+    catch (error) {
 
       return json(
         {
@@ -165,28 +113,287 @@ export default {
       );
 
     }
+
   }
 };
 
 
-// =========================================================
-// DEEP SECOND-STAGE ANALYSIS
-// =========================================================
+/*
+ * ==========================================
+ * AUDIO CHUNK HANDLER
+ * ==========================================
+ */
 
-async function deepAnalysis(
-  transcript,
-  duration,
+async function handleAudioChunk(
+  request,
   env,
   cors
 ) {
 
-  if (!transcript.trim()) {
+  const formData =
+    await request.formData();
+
+
+  const audio =
+    formData.get("audio");
+
+
+  if (!audio) {
+
+    return json(
+      {
+        success: false,
+        error:
+          "No audio/video file received."
+      },
+      400,
+      cors
+    );
+
+  }
+
+
+  const audioBuffer =
+    await audio.arrayBuffer();
+
+
+  /*
+   * Cloudflare Worker protection.
+   */
+
+  const MAX_AUDIO_BYTES =
+    25 * 1024 * 1024;
+
+
+  if (
+    audioBuffer.byteLength >
+    MAX_AUDIO_BYTES
+  ) {
+
+    return json(
+      {
+        success: false,
+        error:
+          "Audio chunk is too large. Please use smaller chunks."
+      },
+      413,
+      cors
+    );
+
+  }
+
+
+  const audioBytes =
+    Array.from(
+      new Uint8Array(
+        audioBuffer
+      )
+    );
+
+
+  /*
+   * Chunk position supplied by frontend.
+   */
+
+  const chunkStart =
+    Number(
+      formData.get("chunkStart")
+    ) || 0;
+
+
+  /*
+   * ==========================================
+   * WHISPER
+   * ==========================================
+   */
+
+  const transcription =
+    await env.AI.run(
+      "@cf/openai/whisper-large-v3-turbo",
+      {
+        audio: audioBytes
+      }
+    );
+
+
+  const rawText =
+    String(
+      transcription?.text ||
+      ""
+    ).trim();
+
+
+  const segments =
+    Array.isArray(
+      transcription?.segments
+    )
+      ? transcription.segments
+      : [];
+
+
+  const words =
+    Array.isArray(
+      transcription?.words
+    )
+      ? transcription.words
+      : [];
+
+
+  /*
+   * ==========================================
+   * IMPORTANT
+   *
+   * Add absolute timestamps to the transcript.
+   *
+   * This means the second AI analysis can
+   * identify the actual location of a moment
+   * in the original video.
+   * ==========================================
+   */
+
+  let timestampedText = "";
+
+
+  if (segments.length) {
+
+    timestampedText =
+      segments
+        .map(segment => {
+
+          const localStart =
+            Number(
+              segment.start
+            ) || 0;
+
+
+          const localEnd =
+            Number(
+              segment.end
+            ) || localStart;
+
+
+          const absoluteStart =
+            chunkStart +
+            localStart;
+
+
+          const absoluteEnd =
+            chunkStart +
+            localEnd;
+
+
+          const text =
+            String(
+              segment.text ||
+              ""
+            ).trim();
+
+
+          if (!text) {
+            return "";
+          }
+
+
+          return (
+            `[${formatTime(absoluteStart)} - ` +
+            `${formatTime(absoluteEnd)}] ` +
+            `${text}`
+          );
+
+        })
+        .filter(Boolean)
+        .join("\n");
+
+  }
+
+  else {
+
+    timestampedText =
+      rawText
+        ? `[${formatTime(chunkStart)}] ${rawText}`
+        : "";
+
+  }
+
+
+  return json(
+    {
+      success: true,
+      ai: true,
+
+      /*
+       * The frontend expects data.transcript.
+       * We return the timestamped version here
+       * so the later analysis has useful timing.
+       */
+
+      transcript:
+        timestampedText,
+
+      rawTranscript:
+        rawText,
+
+      segments:
+        segments,
+
+      words:
+        words,
+
+      chunkStart:
+        chunkStart
+
+    },
+    200,
+    cors
+  );
+
+}
+
+
+/*
+ * ==========================================
+ * VIRAL ANALYSIS HANDLER
+ * ==========================================
+ *
+ * This is the SECOND stage.
+ *
+ * Stage 1:
+ * Find possible viral moments.
+ *
+ * Stage 2:
+ * Deeply analyse those candidates and reject
+ * weak ones.
+ *
+ * Stage 3:
+ * Generate the final hook for the best one.
+ * ==========================================
+ */
+
+async function handleAnalysis(
+  body,
+  env,
+  cors
+) {
+
+  const transcript =
+    String(
+      body?.transcript ||
+      ""
+    ).trim();
+
+
+  if (!transcript) {
 
     return json(
       {
         success: true,
-        hook: "",
+        ai: true,
+        transcript: "",
         viralClips: [],
+        hook: "",
+        hookError: "",
+        viralError:
+          "No transcript supplied.",
         clipCount: 0,
         bestScore: 0,
         bestClip: null
@@ -198,137 +405,360 @@ async function deepAnalysis(
   }
 
 
-  // =======================================================
-  // FIRST PASS
-  // Find candidate viral moments
-  // =======================================================
+  /*
+   * ==========================================
+   * STAGE 1
+   * BROAD VIRAL MOMENT DETECTION
+   * ==========================================
+   */
 
-  const firstPass =
-    await env.AI.run(
-      "@cf/meta/llama-3.1-8b-instruct-fast",
-      {
+  let candidates = [];
 
-        messages: [
 
-          {
-            role: "system",
+  let firstPassError = "";
 
-            content: `
-You are ClipAI's first-pass viral video detector.
 
-Analyze the COMPLETE timestamped transcript.
+  try {
 
-Find up to 5 candidate moments that could work exceptionally well as:
+    const firstAI =
+      await env.AI.run(
+        "@cf/meta/llama-3.1-8b-instruct-fast",
+        {
+
+          messages: [
+
+            {
+              role: "system",
+
+              content: `
+You are ClipAI's first-pass viral moment detector.
+
+Analyse the supplied timestamped transcript.
+
+Find up to 8 POSSIBLE moments that could work as:
 - TikTok clips
 - YouTube Shorts
 - Instagram Reels
 
 Look for:
-- strong openings
 - surprising statements
 - funny moments
-- arguments
 - emotional moments
+- arguments
 - controversial opinions
-- unexpected twists
-- impressive facts
+- unusual facts
 - stories
-- strong reactions
+- unexpected twists
+- impressive information
+- strong opinions
 - curiosity
-- unusual information
-- satisfying explanations
-- clear payoffs
+- memorable statements
+- clear setups and payoffs
 
-ONLY use information contained in the transcript.
+ONLY use information explicitly present in the transcript.
 
-Never invent:
+NEVER invent:
 - people
 - relationships
 - events
+- secrets
 - motivations
 - emotions
 - locations
 - backstory
 - outcomes
 
-Candidate clips should normally be 10-60 seconds.
+The timestamps MUST come from the transcript.
 
-Return ONLY JSON.
+Return ONLY valid JSON.
 
 Format:
 
 [
   {
-    "start": 10,
-    "end": 35,
-    "reason": "Why this moment deserves deeper analysis."
+    "start": 12.5,
+    "end": 42.8,
+    "reason": "Why this moment may be interesting.",
+    "hook": "A truthful curiosity-based hook."
   }
 ]
 
-If there are no candidates, return [].
+If nothing is interesting, return [].
+
+No markdown.
+No explanation.
 `
-          },
+            },
 
-          {
-            role: "user",
+            {
+              role: "user",
 
-            content:
-              "TIMESTAMPED TRANSCRIPT:\n\n" +
-              transcript
-          }
+              content:
+                "TIMESTAMPED TRANSCRIPT:\n\n" +
+                transcript
 
-        ],
+            }
 
-        max_tokens: 1200,
+          ],
 
-        temperature: 0.1
+          max_tokens: 1200,
 
-      }
-    );
+          temperature: 0.1
 
+        }
+      );
 
-  let candidates = [];
-
-
-  try {
 
     let raw =
-      firstPass.response || "";
+      String(
+        firstAI?.response ||
+        ""
+      ).trim();
+
 
     raw =
-      cleanJSON(raw);
+      cleanJSON(
+        raw
+      );
+
 
     candidates =
-      JSON.parse(raw);
+      JSON.parse(
+        raw
+      );
 
-    if (!Array.isArray(candidates)) {
+
+    if (
+      !Array.isArray(
+        candidates
+      )
+    ) {
+
       candidates = [];
+
     }
 
-  } catch {
+  }
+
+  catch (error) {
+
+    firstPassError =
+      error?.message ||
+      "First viral analysis failed.";
 
     candidates = [];
 
   }
 
 
-  // =======================================================
-  // VALIDATE CANDIDATES
-  // =======================================================
+  /*
+   * ==========================================
+   * STAGE 2
+   * DEEP ANALYSIS
+   * ==========================================
+   *
+   * We now give the AI the candidates plus
+   * the original transcript.
+   *
+   * This prevents the first quick scan from
+   * deciding the final clips by itself.
+   * ==========================================
+   */
 
-  candidates =
-    candidates
-      .filter(item => {
+  let viralClips = [];
 
-        if (!item) {
+
+  let deepAnalysisError = "";
+
+
+  try {
+
+    const candidateText =
+      JSON.stringify(
+        candidates
+      );
+
+
+    const deepAI =
+      await env.AI.run(
+        "@cf/meta/llama-3.1-8b-instruct-fast",
+        {
+
+          messages: [
+
+            {
+              role: "system",
+
+              content: `
+You are ClipAI's senior viral video editor.
+
+This is the DEEP ANALYSIS stage.
+
+A first AI pass has already identified possible viral moments.
+
+Your job is to carefully review those candidates against the FULL transcript and decide which moments are genuinely strong.
+
+Do NOT simply accept every candidate.
+
+Reject moments that are:
+- boring
+- repetitive
+- contextless
+- misleading
+- too dependent on missing context
+- weak without visual information
+- not actually interesting
+- artificially dramatic
+
+Prioritise moments with:
+- a strong opening
+- curiosity
+- tension
+- a surprising statement
+- a clear story
+- a strong opinion
+- a payoff
+- a memorable line
+- a reason someone would keep watching
+
+ONLY use information explicitly contained in the transcript.
+
+NEVER invent:
+- drama
+- emotions
+- relationships
+- people
+- secrets
+- backstory
+- outcomes
+- motivations
+- facts
+
+The final clip must normally be 10-60 seconds.
+
+You may adjust the start/end slightly if needed, but timestamps must remain inside the supplied transcript.
+
+Give each surviving clip a score from 0-100.
+
+90-100 = exceptional
+80-89 = very strong
+70-79 = strong
+60-69 = decent
+Below 60 = weak
+
+Only return the genuinely strongest clips.
+
+Maximum 3 clips.
+
+Return ONLY valid JSON.
+
+Format:
+
+[
+  {
+    "score": 91,
+    "start": 12.5,
+    "end": 43.2,
+    "reason": "Specific explanation of why this could perform well.",
+    "hook": "A truthful short hook based only on the transcript."
+  }
+]
+
+No markdown.
+No explanation outside JSON.
+`
+            },
+
+            {
+              role: "user",
+
+              content:
+                "FULL TIMESTAMPED TRANSCRIPT:\n\n" +
+                transcript +
+                "\n\nFIRST-PASS CANDIDATES:\n\n" +
+                candidateText
+
+            }
+
+          ],
+
+          max_tokens: 1400,
+
+          temperature: 0.1
+
+        }
+      );
+
+
+    let raw =
+      String(
+        deepAI?.response ||
+        ""
+      ).trim();
+
+
+    raw =
+      cleanJSON(
+        raw
+      );
+
+
+    viralClips =
+      JSON.parse(
+        raw
+      );
+
+
+    if (
+      !Array.isArray(
+        viralClips
+      )
+    ) {
+
+      viralClips = [];
+
+    }
+
+  }
+
+  catch (error) {
+
+    deepAnalysisError =
+      error?.message ||
+      "Deep viral analysis failed.";
+
+    viralClips = [];
+
+  }
+
+
+  /*
+   * ==========================================
+   * VALIDATE FINAL CLIPS
+   * ==========================================
+   */
+
+  const safeClips =
+    viralClips
+
+      .filter(clip => {
+
+        if (!clip) {
           return false;
         }
 
+
         const start =
-          Number(item.start);
+          Number(
+            clip.start
+          );
+
 
         const end =
-          Number(item.end);
+          Number(
+            clip.end
+          );
+
 
         return (
           Number.isFinite(start) &&
@@ -337,279 +767,159 @@ If there are no candidates, return [].
         );
 
       })
-      .map(item => {
+
+      .map(clip => {
 
         let start =
           Math.max(
             0,
-            Number(item.start)
+            Number(
+              clip.start
+            )
           );
+
 
         let end =
           Math.max(
             start,
-            Number(item.end)
+            Number(
+              clip.end
+            )
           );
 
+
+        /*
+         * Maximum 60 seconds.
+         */
+
         if (
-          end - start > 60
+          end - start >
+          60
         ) {
-          end = start + 60;
+
+          end =
+            start + 60;
+
         }
 
+
+        /*
+         * Minimum useful clip length.
+         */
+
+        if (
+          end - start <
+          10
+        ) {
+
+          end =
+            start + 10;
+
+        }
+
+
+        let score =
+          Number(
+            clip.score
+          );
+
+
+        if (
+          !Number.isFinite(score)
+        ) {
+
+          score = 0;
+
+        }
+
+
+        score =
+          Math.round(
+            Math.max(
+              0,
+              Math.min(
+                100,
+                score
+              )
+            )
+          );
+
+
         return {
+
+          score,
+
           start,
+
           end,
+
+          duration:
+            Math.round(
+              (
+                end -
+                start
+              ) * 10
+            ) / 10,
+
           reason:
             String(
-              item.reason || ""
+              clip.reason ||
+              "Potentially strong viral moment."
+            ),
+
+          hook:
+            String(
+              clip.hook ||
+              ""
             )
+
         };
 
       })
-      .slice(0, 5);
 
+      .sort(
+        (a, b) =>
+          b.score -
+          a.score
+      )
 
-  // =======================================================
-  // SECOND / DEEP PASS
-  // This is the important part.
-  //
-  // Each candidate is individually examined in detail.
-  // =======================================================
-
-  const analysedClips = [];
-
-
-  for (
-    const candidate of candidates
-  ) {
-
-    const momentText =
-      extractMoment(
-        transcript,
-        candidate.start,
-        candidate.end
+      .slice(
+        0,
+        3
       );
 
 
-    if (!momentText.trim()) {
-      continue;
-    }
-
-
-    try {
-
-      const deepAI =
-        await env.AI.run(
-          "@cf/meta/llama-3.1-8b-instruct-fast",
-          {
-
-            messages: [
-
-              {
-                role: "system",
-
-                content: `
-You are ClipAI's senior viral-video editor.
-
-This is a SECOND, DEEP analysis.
-
-Do not simply decide whether the moment is interesting.
-
-Evaluate it as if you were deciding whether to actually publish it.
-
-Consider:
-
-1. Hook strength
-2. Curiosity
-3. Emotional impact
-4. Surprise
-5. Shareability
-6. Replay potential
-7. Clarity without missing context
-8. Beginning-to-payoff structure
-9. Whether the moment works as a standalone short
-10. Whether viewers would keep watching
-
-Be strict.
-
-A normal conversation should NOT automatically receive a high score.
-
-Score from 0-100.
-
-90-100 = exceptional viral candidate
-80-89 = very strong
-70-79 = strong
-60-69 = usable
-40-59 = weak
-0-39 = poor
-
-ONLY use information explicitly contained in the supplied moment.
-
-Never invent:
-- people
-- relationships
-- secrets
-- drama
-- motivations
-- emotions
-- outcomes
-- backstory
-
-Return ONLY valid JSON:
-
-{
-  "score": 92,
-  "reason": "Detailed explanation of why this could perform.",
-  "hook": "A short truthful hook.",
-  "strengths": [
-    "strength",
-    "strength"
-  ],
-  "weaknesses": [
-    "weakness"
-  ]
-}
-`
-              },
-
-              {
-                role: "user",
-
-                content:
-                  "VIDEO MOMENT:\n\n" +
-                  momentText
-              }
-
-            ],
-
-            max_tokens: 700,
-
-            temperature: 0.1
-
-          }
-        );
-
-
-      let raw =
-        cleanJSON(
-          deepAI.response || ""
-        );
-
-
-      const result =
-        JSON.parse(raw);
-
-
-      const score =
-        Math.round(
-          Math.min(
-            100,
-            Math.max(
-              0,
-              Number(result.score) || 0
-            )
-          )
-        );
-
-
-      analysedClips.push({
-
-        score,
-
-        start:
-          candidate.start,
-
-        end:
-          candidate.end,
-
-        duration:
-          Math.round(
-            (
-              candidate.end -
-              candidate.start
-            ) * 10
-          ) / 10,
-
-        reason:
-          String(
-            result.reason ||
-            candidate.reason ||
-            "Potentially strong moment."
-          ),
-
-        hook:
-          String(
-            result.hook || ""
-          ),
-
-        strengths:
-          Array.isArray(
-            result.strengths
-          )
-            ? result.strengths
-            : [],
-
-        weaknesses:
-          Array.isArray(
-            result.weaknesses
-          )
-            ? result.weaknesses
-            : []
-
-      });
-
-
-    } catch (error) {
-
-      console.error(
-        "Deep analysis error:",
-        error
-      );
-
-    }
-
-  }
-
-
-  // =======================================================
-  // SORT BEST FIRST
-  // =======================================================
-
-  analysedClips.sort(
-    (a, b) =>
-      b.score - a.score
-  );
-
-
-  const viralClips =
-    analysedClips.slice(0, 3);
-
-
-  // =======================================================
-  // GENERATE FINAL HOOK FOR BEST CLIP
-  // =======================================================
+  /*
+   * ==========================================
+   * STAGE 3
+   * DEEP HOOK GENERATION
+   * ==========================================
+   */
 
   let hook = "";
 
+  let hookError = "";
+
 
   if (
-    viralClips.length > 0
+    safeClips.length > 0
   ) {
 
-    const best =
-      viralClips[0];
+    const bestClip =
+      safeClips[0];
 
 
     const bestText =
-      extractMoment(
+      getTranscriptBetween(
         transcript,
-        best.start,
-        best.end
+        bestClip.start,
+        bestClip.end
       );
 
 
-    if (bestText.trim()) {
+    if (
+      bestText.trim()
+    ) {
 
       try {
 
@@ -624,17 +934,30 @@ Return ONLY valid JSON:
                   role: "system",
 
                   content: `
-Create ONE extremely concise spoken hook for this video moment.
+You are ClipAI's final hook writer.
+
+Create ONE extremely concise spoken hook for the selected video moment.
 
 The hook must:
 - be truthful
+- use only information in the supplied moment
 - create curiosity
-- accurately represent the moment
-- take approximately 2-6 seconds to say
+- make someone want to continue watching
+- sound natural when spoken
 
-Do not invent anything.
+Do NOT invent:
+- secrets
+- drama
+- people
+- relationships
+- motivations
+- outcomes
+- facts
+
+Keep it around 5-12 words.
 
 Return ONLY the hook.
+
 No quotation marks.
 No explanation.
 `
@@ -644,12 +967,14 @@ No explanation.
                   role: "user",
 
                   content:
+                    "SELECTED MOMENT:\n\n" +
                     bestText
+
                 }
 
               ],
 
-              max_tokens: 60,
+              max_tokens: 50,
 
               temperature: 0.15
 
@@ -659,7 +984,9 @@ No explanation.
 
         hook =
           String(
-            hookAI.response || ""
+            hookAI?.response ||
+            bestClip.hook ||
+            ""
           )
             .trim()
             .replace(
@@ -667,11 +994,17 @@ No explanation.
               ""
             );
 
+      }
 
-      } catch {
+      catch (error) {
+
+        hookError =
+          error?.message ||
+          "Hook generation failed.";
 
         hook =
-          best.hook || "";
+          bestClip.hook ||
+          "";
 
       }
 
@@ -680,143 +1013,362 @@ No explanation.
   }
 
 
+  /*
+   * ==========================================
+   * FALLBACK HOOK
+   * ==========================================
+   */
+
+  if (
+    !hook &&
+    safeClips.length > 0
+  ) {
+
+    hook =
+      safeClips[0].hook ||
+      "";
+
+  }
+
+
+  /*
+   * ==========================================
+   * FINAL RESPONSE
+   * ==========================================
+   */
+
+  let viralError = "";
+
+
+  if (
+    deepAnalysisError
+  ) {
+
+    viralError =
+      deepAnalysisError;
+
+  }
+
+  else if (
+    firstPassError
+  ) {
+
+    viralError =
+      firstPassError;
+
+  }
+
+
   return json(
     {
 
-      success: true,
+      success:
+        true,
 
-      ai: true,
+      ai:
+        true,
 
-      hook,
+      transcript:
+        transcript,
 
-      viralClips,
+      hook:
+        hook,
+
+      hookError:
+        hookError,
+
+      viralClips:
+        safeClips,
+
+      viralError:
+        viralError,
 
       clipCount:
-        viralClips.length,
+        safeClips.length,
 
       bestScore:
-        viralClips.length
-          ? viralClips[0].score
+        safeClips.length
+          ? safeClips[0].score
           : 0,
 
       bestClip:
-        viralClips.length
-          ? viralClips[0]
+        safeClips.length
+          ? safeClips[0]
           : null,
 
-      duration
+      /*
+       * Useful for debugging.
+       */
+
+      analysisStages: {
+        firstPass:
+          candidates.length,
+
+        deepPass:
+          safeClips.length
+
+      }
 
     },
 
     200,
 
     cors
+
   );
 
 }
 
 
-// =========================================================
-// EXTRACT TIMESTAMP RANGE FROM COMBINED TRANSCRIPT
-// =========================================================
+/*
+ * ==========================================
+ * EXTRACT TEXT BETWEEN TIMESTAMPS
+ * ==========================================
+ */
 
-function extractMoment(
+function getTranscriptBetween(
   transcript,
-  start,
-  end
+  startTime,
+  endTime
 ) {
 
   const lines =
     transcript.split("\n");
 
 
-  const selected = [];
+  const output = [];
 
 
-  for (const line of lines) {
+  for (
+    const line of lines
+  ) {
 
     const match =
       line.match(
-        /^\[(\d{2}):(\d{2})(?::(\d{2}))?\]/
+        /^\[(\d+):(\d+)(?::(\d+))?\s*-\s*(\d+):(\d+)(?::(\d+))?\]\s*(.*)$/
       );
 
 
     if (!match) {
+
+      /*
+       * Also support a simple
+       * [MM:SS] timestamp.
+       */
+
+      const simple =
+        line.match(
+          /^\[(\d+):(\d+)\]\s*(.*)$/
+        );
+
+
+      if (simple) {
+
+        const minutes =
+          Number(
+            simple[1]
+          );
+
+
+        const seconds =
+          Number(
+            simple[2]
+          );
+
+
+        const time =
+          minutes * 60 +
+          seconds;
+
+
+        if (
+          time >= startTime &&
+          time <= endTime
+        ) {
+
+          output.push(
+            simple[3]
+          );
+
+        }
+
+      }
+
       continue;
+
     }
 
 
-    const hours =
-      match[3]
-        ? Number(match[1])
-        : 0;
+    const start =
+      parseTimestamp(
+        match[1],
+        match[2],
+        match[3]
+      );
 
 
-    const minutes =
-      match[3]
-        ? Number(match[2])
-        : Number(match[1]);
-
-
-    const seconds =
-      match[3]
-        ? Number(match[3])
-        : Number(match[2]);
-
-
-    const timestamp =
-      hours * 3600 +
-      minutes * 60 +
-      seconds;
+    const end =
+      parseTimestamp(
+        match[4],
+        match[5],
+        match[6]
+      );
 
 
     if (
-      timestamp >= start &&
-      timestamp <= end
+      end >= startTime &&
+      start <= endTime
     ) {
 
-      selected.push(line);
+      output.push(
+        match[7]
+      );
 
     }
 
   }
 
 
-  return selected.join("\n");
+  return output.join(" ");
 
 }
 
 
-// =========================================================
-// CLEAN JSON FROM MODEL
-// =========================================================
+/*
+ * ==========================================
+ * PARSE TIMESTAMP
+ * ==========================================
+ */
+
+function parseTimestamp(
+  first,
+  second,
+  third
+) {
+
+  if (
+    third !== undefined
+  ) {
+
+    return (
+      Number(first) * 3600 +
+      Number(second) * 60 +
+      Number(third)
+    );
+
+  }
+
+
+  return (
+    Number(first) * 60 +
+    Number(second)
+  );
+
+}
+
+
+/*
+ * ==========================================
+ * CLEAN AI JSON
+ * ==========================================
+ */
 
 function cleanJSON(
   text
 ) {
 
   return String(text)
+
     .trim()
+
     .replace(
       /^```json\s*/i,
       ""
     )
+
     .replace(
       /^```\s*/i,
       ""
     )
+
     .replace(
       /\s*```$/i,
       ""
     )
+
     .trim();
 
 }
 
 
-// =========================================================
-// JSON RESPONSE
-// =========================================================
+/*
+ * ==========================================
+ * FORMAT TIME
+ * ==========================================
+ */
+
+function formatTime(
+  seconds
+) {
+
+  seconds =
+    Number(seconds) || 0;
+
+
+  const hours =
+    Math.floor(
+      seconds / 3600
+    );
+
+
+  const minutes =
+    Math.floor(
+      (
+        seconds % 3600
+      ) / 60
+    );
+
+
+  const remaining =
+    Math.floor(
+      seconds % 60
+    );
+
+
+  if (
+    hours > 0
+  ) {
+
+    return (
+      String(hours)
+        .padStart(2, "0") +
+      ":" +
+      String(minutes)
+        .padStart(2, "0") +
+      ":" +
+      String(remaining)
+        .padStart(2, "0")
+    );
+
+  }
+
+
+  return (
+    String(minutes)
+      .padStart(2, "0") +
+    ":" +
+    String(remaining)
+      .padStart(2, "0")
+  );
+
+}
+
+
+/*
+ * ==========================================
+ * JSON RESPONSE
+ * ==========================================
+ */
 
 function json(
   data,
@@ -825,16 +1377,23 @@ function json(
 ) {
 
   return new Response(
-    JSON.stringify(data),
+    JSON.stringify(
+      data
+    ),
     {
-      status,
+
+      status:
+        status,
 
       headers: {
+
         "Content-Type":
           "application/json",
 
         ...cors
+
       }
+
     }
   );
 
