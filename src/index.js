@@ -8,32 +8,51 @@ export default {
     };
 
     if (request.method === "OPTIONS") {
-      return new Response(null, { headers: cors });
+      return new Response(null, {
+        headers: cors
+      });
     }
 
     if (request.method !== "POST") {
-      return json({ error: "Use POST" }, 405, cors);
+      return json(
+        { error: "Use POST" },
+        405,
+        cors
+      );
     }
 
     try {
 
-      const formData = await request.formData();
-      const audio = formData.get("audio");
+      const formData =
+        await request.formData();
+
+      const audio =
+        formData.get("audio");
+
 
       if (!audio) {
-        return json({
-          error: "No audio/video file received."
-        }, 400, cors);
+
+        return json(
+          {
+            error:
+              "No audio/video file received."
+          },
+          400,
+          cors
+        );
+
       }
 
-      const audioBuffer = await audio.arrayBuffer();
+
+      const audioBuffer =
+        await audio.arrayBuffer();
 
       const audioBytes =
         [...new Uint8Array(audioBuffer)];
 
 
       // ==============================
-      // WHISPER
+      // 1. WHISPER
       // ==============================
 
       const transcription =
@@ -44,17 +63,20 @@ export default {
           }
         );
 
+
       const transcript =
         transcription.text || "";
 
 
       // ==============================
-      // AI HOOK
+      // 2. AI HOOK
       // ==============================
 
-      let hook = "";
+      let hook =
+        "";
 
-      let hookError = "";
+      let hookError =
+        "";
 
 
       if (transcript.trim()) {
@@ -65,28 +87,32 @@ export default {
             await env.AI.run(
               "@cf/meta/llama-3.1-8b-instruct-fast",
               {
+
                 messages: [
 
                   {
                     role: "system",
 
                     content:
-                      "You are a viral short-form video editor. " +
-                      "Write ONE short spoken hook for the beginning " +
-                      "of a TikTok, YouTube Short or Instagram Reel. " +
-                      "The hook should create curiosity and make people " +
-                      "want to keep watching. It must be truthful and " +
-                      "based only on the transcript. Keep it between " +
-                      "2 and 6 seconds when spoken. Return ONLY the hook."
+                      "You are an expert viral video editor. " +
+                      "Create ONE extremely engaging opening hook " +
+                      "for a short-form video. " +
+                      "The hook must be based ONLY on the transcript. " +
+                      "Do not invent facts. " +
+                      "Do not reveal the ending. " +
+                      "Make the viewer curious. " +
+                      "It should take about 2 to 6 seconds to say. " +
+                      "Return ONLY the spoken hook."
                   },
 
                   {
                     role: "user",
 
                     content:
-                      "Video transcript:\n\n" +
+                      "Transcript:\n\n" +
                       transcript +
-                      "\n\nWrite the hook now."
+                      "\n\n" +
+                      "Write the viral hook now."
                   }
 
                 ],
@@ -94,31 +120,57 @@ export default {
                 max_tokens: 80,
 
                 temperature: 0.7
+
               }
             );
 
 
-          hook =
-            aiResponse.response || "";
+            hook =
+              aiResponse.response ||
+              "";
 
 
-        } catch (error) {
+            /*
+             * Remove accidental quotation marks
+             */
 
-          hookError =
-            error.message ||
-            "Hook generation failed.";
+            hook =
+              hook
+                .trim()
+                .replace(/^["']|["']$/g, "");
 
-        }
+
+          }
+
+          catch (error) {
+
+            hookError =
+              error.message ||
+              "Hook generation failed.";
+
+          }
 
       }
 
+
+      // ==============================
+      // 3. RETURN EVERYTHING
+      // ==============================
 
       return json({
 
         success: true,
 
+        ai: true,
+
         transcript:
           transcript,
+
+        hook:
+          hook,
+
+        hookError:
+          hookError,
 
         segments:
           transcription.segments || [],
@@ -126,18 +178,21 @@ export default {
         words:
           transcription.words || [],
 
-        hook:
-          hook.trim(),
-
-        hookError:
-          hookError
+        message:
+          hook
+            ? "Transcript and AI hook generated."
+            : "Transcript generated but no hook was returned."
 
       }, 200, cors);
 
 
-    } catch (error) {
+    }
+
+    catch (error) {
 
       return json({
+
+        success: false,
 
         error:
           error.message ||
@@ -154,15 +209,24 @@ export default {
 function json(data, status, cors) {
 
   return new Response(
+
     JSON.stringify(data),
+
     {
+
       status: status,
 
       headers: {
-        "Content-Type": "application/json",
+
+        "Content-Type":
+          "application/json",
+
         ...cors
+
       }
+
     }
+
   );
 
 }
