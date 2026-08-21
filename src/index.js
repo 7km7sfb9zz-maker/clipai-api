@@ -14,10 +14,18 @@ export default {
     }
 
     if (request.method !== "POST") {
-      return json({ error: "Use POST" }, 405, cors);
+      return json(
+        { error: "Use POST" },
+        405,
+        cors
+      );
     }
 
     try {
+
+      // ==============================
+      // RECEIVE VIDEO
+      // ==============================
 
       const formData =
         await request.formData();
@@ -26,21 +34,27 @@ export default {
         formData.get("audio");
 
       if (!audio) {
-        return json({
-          error: "No audio/video file received."
-        }, 400, cors);
+        return json(
+          {
+            error:
+              "No audio/video file received."
+          },
+          400,
+          cors
+        );
       }
 
-
-      // ==============================
-      // WHISPER
-      // ==============================
 
       const audioBuffer =
         await audio.arrayBuffer();
 
       const audioBytes =
         [...new Uint8Array(audioBuffer)];
+
+
+      // ==============================
+      // WHISPER TRANSCRIPTION
+      // ==============================
 
       const transcription =
         await env.AI.run(
@@ -50,11 +64,17 @@ export default {
           }
         );
 
+
       const transcript =
         transcription.text || "";
 
+
       const segments =
         transcription.segments || [];
+
+
+      const words =
+        transcription.words || [];
 
 
       // ==============================
@@ -62,61 +82,125 @@ export default {
       // ==============================
 
       let hook = "";
+
       let hookError = "";
+
 
       if (transcript.trim()) {
 
-        try {
+        const wordCount =
+          transcript
+            .trim()
+            .split(/\s+/)
+            .length;
 
-          const hookAI =
-            await env.AI.run(
-              "@cf/meta/llama-3.1-8b-instruct-fast",
-              {
 
-                messages: [
+        // If the transcript is extremely
+        // short, don't let the AI invent
+        // context that isn't there.
 
-                  {
-                    role: "system",
+        if (wordCount < 8) {
 
-                    content:
-                      "You are a viral short-form video editor. " +
-                      "Create ONE short spoken hook for the beginning " +
-                      "of the video. Make it curiosity-driven, truthful " +
-                      "and based only on the transcript. " +
-                      "It should take 2 to 6 seconds to say. " +
-                      "Return ONLY the hook."
-                  },
+          hook =
+            transcript.trim();
 
-                  {
-                    role: "user",
+        } else {
 
-                    content:
-                      "Transcript:\n\n" +
-                      transcript
-                  }
+          try {
 
-                ],
+            const hookAI =
+              await env.AI.run(
+                "@cf/meta/llama-3.1-8b-instruct-fast",
+                {
 
-                max_tokens: 80,
-                temperature: 0.7
+                  messages: [
 
-              }
-            );
+                    {
+                      role: "system",
+
+                      content:
+                        `You are a strict viral short-form video editor.
+
+Create ONE short spoken hook for the video.
+
+IMPORTANT:
+The transcript is the ONLY source of truth.
+
+You may ONLY use information explicitly
+contained in the transcript.
+
+NEVER invent or assume:
+- people
+- family
+- relationships
+- secrets
+- locations
+- events
+- motivations
+- emotions
+- backstory
+- outcomes
+- context
+
+NEVER pretend you know what happened
+outside the transcript.
+
+Do not say things like:
+"his darkest secret"
+"you won't believe what happened"
+"the truth was finally revealed"
+unless the transcript explicitly supports it.
+
+The hook should create curiosity using
+information that actually appears in the
+transcript.
+
+Keep it 2 to 6 seconds when spoken.
+
+Return ONLY the hook text.
+
+If the transcript does not contain enough
+information for a meaningful hook, return
+a short sentence taken directly from the
+transcript instead.`
+                    },
+
+                    {
+                      role: "user",
+
+                      content:
+                        "TRANSCRIPT:\n\n" +
+                        transcript
+                    }
+
+                  ],
+
+                  max_tokens: 60,
+
+                  temperature: 0.1
+
+                }
+              );
+
 
             hook =
-              (hookAI.response || "")
-                .trim()
-                .replace(/^["']|["']$/g, "");
+              (
+                hookAI.response ||
+                ""
+              )
+              .trim()
+              .replace(/^["']|["']$/g, "");
 
-          }
 
-          catch (error) {
+          } catch (error) {
 
             hookError =
               error.message ||
               "Hook generation failed.";
 
           }
+
+        }
 
       }
 
@@ -126,6 +210,7 @@ export default {
       // ==============================
 
       let viralClips = [];
+
       let viralError = "";
 
 
@@ -134,17 +219,19 @@ export default {
         try {
 
           const timestampedTranscript =
-            segments.map(
-              (segment, index) => {
+            segments
+              .map(
+                (segment) => {
 
-                return (
-                  `[${formatTime(segment.start)} - ` +
-                  `${formatTime(segment.end)}] ` +
-                  `${segment.text}`
-                );
+                  return (
+                    `[${formatTime(segment.start)} - ` +
+                    `${formatTime(segment.end)}] ` +
+                    `${segment.text || ""}`
+                  );
 
-              }
-            ).join("\n");
+                }
+              )
+              .join("\n");
 
 
           const viralAI =
@@ -157,77 +244,70 @@ export default {
                   {
                     role: "system",
 
-                 content:
-  "You are a viral short-form video editor. " +
+                    content:
+                      `You are an expert short-form video editor.
 
-  "Create ONE short spoken hook based ONLY " +
-  "on information explicitly contained in the transcript. " +
-
-  "CRITICAL RULES: " +
-
-  "Never invent people, events, facts, context, " +
-  "relationships, outcomes or details. " +
-
-  "Never assume what the video is about. " +
-
-  "If the transcript is too short or lacks enough " +
-  "context to create a meaningful hook, return " +
-  "the transcript itself or a simple curiosity-based " +
-  "hook that does not add new information. " +
-
-  "The hook must take 2 to 6 seconds to say. " +
-
-  "Return ONLY the hook."
-
-Analyze the timestamped transcript and find up to 3
-of the strongest short-form video moments.
+Analyze the timestamped transcript and
+identify the strongest potential viral moments.
 
 Look for:
-- strong hooks
 - surprising statements
-- emotional moments
 - funny moments
-- arguments or tension
+- emotional moments
+- arguments
+- interesting stories
 - useful information
-- strong stories
+- strong reactions
 - curiosity
 - satisfying payoffs
+- memorable moments
 
-The clip length should be chosen naturally.
-Do NOT force every clip to the same length.
+Choose the clip length naturally.
+
+Do NOT make every clip the same length.
 
 Each clip must be between 10 and 60 seconds.
 
-Return ONLY valid JSON in this exact format:
+IMPORTANT:
+Only use information explicitly contained
+in the transcript.
+
+NEVER invent events or context.
+
+Return ONLY valid JSON.
+
+Format:
 
 [
   {
     "score": 95,
     "start": 12.5,
     "end": 41.2,
-    "reason": "Strong curiosity and payoff",
-    "hook": "Short hook for this clip"
+    "reason": "Why this moment could perform well",
+    "hook": "A truthful hook based on the transcript"
   }
 ]
 
-Do not include markdown.
-Do not include code fences.`
+If there are no meaningful moments,
+return an empty array.
 
+Do not use markdown.
+Do not use code fences.`
                   },
 
                   {
                     role: "user",
 
                     content:
-                      "Timestamped transcript:\n\n" +
+                      "TIMESTAMPED TRANSCRIPT:\n\n" +
                       timestampedTranscript
                   }
 
                 ],
 
-                max_tokens: 500,
+                max_tokens: 600,
 
-                temperature: 0.5
+                temperature: 0.2
 
               }
             );
@@ -251,21 +331,29 @@ Do not include code fences.`
             viralClips =
               JSON.parse(raw);
 
-          }
 
-          catch {
+            // Make sure the AI actually
+            // returned an array.
+
+            if (!Array.isArray(viralClips)) {
+
+              viralClips = [];
+
+              viralError =
+                "AI returned invalid clip data.";
+
+            }
+
+          } catch {
 
             viralClips = [];
 
             viralError =
-              "AI returned invalid clip data.";
+              "AI returned invalid JSON.";
 
           }
 
-
-        }
-
-        catch (error) {
+        } catch (error) {
 
           viralError =
             error.message ||
@@ -277,52 +365,130 @@ Do not include code fences.`
 
 
       // ==============================
-      // RETURN RESULTS
+      // SAFETY CHECK CLIP TIMESTAMPS
       // ==============================
 
-      return json({
+      const safeClips =
+        viralClips
+          .filter(
+            clip =>
+              clip &&
+              Number.isFinite(
+                Number(clip.start)
+              ) &&
+              Number.isFinite(
+                Number(clip.end)
+              )
+          )
+          .map(
+            clip => {
 
-        success: true,
+              const start =
+                Math.max(
+                  0,
+                  Number(clip.start)
+                );
 
-        ai: true,
-
-        transcript:
-          transcript,
-
-        segments:
-          segments,
-
-        words:
-          transcription.words || [],
-
-        hook:
-          hook,
-
-        hookError:
-          hookError,
-
-        viralClips:
-          viralClips,
-
-        viralError:
-          viralError
-
-      }, 200, cors);
+              const end =
+                Math.max(
+                  start,
+                  Number(clip.end)
+                );
 
 
-    }
+              return {
 
-    catch (error) {
+                score:
+                  Math.min(
+                    100,
+                    Math.max(
+                      0,
+                      Number(clip.score) || 0
+                    )
+                  ),
 
-      return json({
+                start:
+                  start,
 
-        success: false,
+                end:
+                  end,
 
-        error:
-          error.message ||
-          "AI processing failed."
+                reason:
+                  clip.reason || "",
 
-      }, 500, cors);
+                hook:
+                  clip.hook || ""
+
+              };
+
+            }
+          );
+
+
+      // ==============================
+      // RETURN EVERYTHING
+      // ==============================
+
+      return json(
+
+        {
+
+          success: true,
+
+          ai: true,
+
+          transcript:
+            transcript,
+
+          segments:
+            segments,
+
+          words:
+            words,
+
+          hook:
+            hook,
+
+          hookError:
+            hookError,
+
+          viralClips:
+            safeClips,
+
+          viralError:
+            viralError,
+
+          message:
+            "ClipAI analysis complete."
+
+        },
+
+        200,
+
+        cors
+
+      );
+
+
+    } catch (error) {
+
+      return json(
+
+        {
+
+          success: false,
+
+          error:
+            error.message ||
+            "AI processing failed."
+
+        },
+
+        500,
+
+        cors
+
+      );
 
     }
 
@@ -330,16 +496,27 @@ Do not include code fences.`
 };
 
 
+// ==============================
+// TIME FORMATTER
+// ==============================
+
 function formatTime(seconds) {
 
   seconds =
     Number(seconds) || 0;
 
+
   const minutes =
-    Math.floor(seconds / 60);
+    Math.floor(
+      seconds / 60
+    );
+
 
   const remaining =
-    Math.floor(seconds % 60);
+    Math.floor(
+      seconds % 60
+    );
+
 
   return (
     String(minutes).padStart(2, "0") +
@@ -350,7 +527,15 @@ function formatTime(seconds) {
 }
 
 
-function json(data, status, cors) {
+// ==============================
+// JSON RESPONSE
+// ==============================
+
+function json(
+  data,
+  status,
+  cors
+) {
 
   return new Response(
 
@@ -358,7 +543,8 @@ function json(data, status, cors) {
 
     {
 
-      status: status,
+      status:
+        status,
 
       headers: {
 
