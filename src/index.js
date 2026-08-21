@@ -29,6 +29,7 @@ export default {
       const audio =
         formData.get("audio");
 
+
       if (!audio) {
 
         return json(
@@ -39,6 +40,12 @@ export default {
 
       }
 
+
+      /*
+       * Convert uploaded video/audio
+       * into bytes for Whisper.
+       */
+
       const audioBuffer =
         await audio.arrayBuffer();
 
@@ -46,7 +53,12 @@ export default {
         [...new Uint8Array(audioBuffer)];
 
 
-      const result =
+      /*
+       * STEP 1
+       * Transcribe with Whisper.
+       */
+
+      const transcription =
         await env.AI.run(
           "@cf/openai/whisper",
           {
@@ -55,10 +67,77 @@ export default {
         );
 
 
+      const transcript =
+        transcription.text || "";
+
+
       /*
-       * Return the transcript plus
-       * whatever timestamp information
-       * Whisper provides.
+       * STEP 2
+       * Ask an AI model to create
+       * a short viral hook.
+       */
+
+      let hook =
+        "";
+
+
+      if (transcript.trim()) {
+
+        const aiResponse =
+          await env.AI.run(
+            "@cf/meta/llama-3.1-8b-instruct",
+            {
+
+              messages: [
+
+                {
+                  role: "system",
+
+                  content:
+                    `You write short hooks for
+                     TikTok, YouTube Shorts and
+                     Instagram Reels.
+
+                     Create ONE short spoken
+                     introduction for the video.
+
+                     Requirements:
+
+                     - 2 to 6 seconds when spoken
+                     - Create curiosity
+                     - Make people want to keep watching
+                     - Do not lie
+                     - Do not invent facts
+                     - Do not reveal the ending
+                     - Sound natural when spoken
+                     - Do not use hashtags
+                     - Return ONLY the hook text.`
+                },
+
+                {
+                  role: "user",
+
+                  content:
+                    `Create a hook for this
+                     video transcript:
+
+                     ${transcript}`
+                }
+
+              ]
+
+            }
+          );
+
+
+        hook =
+          aiResponse.response || "";
+
+      }
+
+
+      /*
+       * Return everything to the website.
        */
 
       return json({
@@ -66,21 +145,26 @@ export default {
         success: true,
 
         transcript:
-          result.text || "",
+          transcript,
 
         segments:
-          result.segments || [],
+          transcription.segments || [],
 
         words:
-          result.words || [],
+          transcription.words || [],
+
+        hook:
+          hook.trim(),
 
         message:
-          "Whisper transcription complete."
+          "Transcription and AI hook complete."
 
       }, 200, cors);
 
 
-    } catch (error) {
+    }
+
+    catch (error) {
 
       console.error(error);
 
@@ -88,7 +172,7 @@ export default {
 
         error:
           error.message ||
-          "Transcription failed."
+          "AI processing failed."
 
       }, 500, cors);
 
@@ -101,15 +185,24 @@ export default {
 function json(data, status, cors) {
 
   return new Response(
+
     JSON.stringify(data),
+
     {
+
       status: status,
+
       headers: {
+
         "Content-Type":
           "application/json",
+
         ...cors
+
       }
+
     }
+
   );
 
 }
