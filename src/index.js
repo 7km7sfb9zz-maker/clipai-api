@@ -1,77 +1,136 @@
 export default {
   async fetch(request, env) {
 
+    const cors = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type"
+    };
+
     if (request.method === "OPTIONS") {
       return new Response(null, {
-        headers: corsHeaders()
+        headers: cors
       });
     }
 
     if (request.method !== "POST") {
       return json({
         error: "Use POST"
-      }, 405);
+      }, 405, cors);
     }
 
     try {
 
-      const body = await request.json();
+      const contentType =
+        request.headers.get("content-type") || "";
 
-      const duration = Number(body.duration);
-      const transcript = body.transcript;
 
-      if (!Number.isFinite(duration) || duration <= 0) {
+      /*
+       * We expect the website to send
+       * the video's audio as multipart/form-data.
+       */
+
+      if (!contentType.includes("multipart/form-data")) {
+
         return json({
-          error: "Invalid video duration"
-        }, 400);
+          error: "Expected multipart/form-data"
+        }, 400, cors);
+
       }
 
-      if (!transcript) {
+
+      const formData =
+        await request.formData();
+
+
+      const audio =
+        formData.get("audio");
+
+
+      if (!audio || typeof audio.arrayBuffer !== "function") {
+
         return json({
-          error: "No transcript supplied"
-        }, 400);
+          error: "No audio file received"
+        }, 400, cors);
+
       }
+
+
+      /*
+       * Convert the uploaded audio into
+       * an ArrayBuffer for Workers AI.
+       */
+
+      const audioBuffer =
+        await audio.arrayBuffer();
+
+
+      /*
+       * Send the audio to Whisper.
+       */
+
+      const result =
+        await env.AI.run(
+          "@cf/openai/whisper",
+          {
+            audio: [...new Uint8Array(audioBuffer)]
+          }
+        );
+
 
       return json({
+
         success: true,
-        duration: duration,
-        transcriptLength: transcript.length,
-        message: "ClipAI API is working."
-      });
+
+        transcript:
+          result.text || "",
+
+        message:
+          "Whisper transcription complete."
+
+      }, 200, cors);
+
 
     } catch (error) {
 
+      console.error(error);
+
+
       return json({
-        error: "Invalid request"
-      }, 400);
+
+        error:
+          error.message ||
+          "Transcription failed."
+
+      }, 500, cors);
 
     }
+
   }
 };
 
 
-function corsHeaders() {
-
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
-  };
-
-}
-
-
-function json(data, status = 200) {
+function json(data, status, cors) {
 
   return new Response(
+
     JSON.stringify(data),
+
     {
+
       status: status,
+
       headers: {
-        "Content-Type": "application/json",
-        ...corsHeaders()
+
+        "Content-Type":
+          "application/json",
+
+        ...cors
+
       }
+
     }
+
   );
 
 }
