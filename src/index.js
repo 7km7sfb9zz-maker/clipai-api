@@ -47,27 +47,59 @@ export default {
       const audioBuffer =
         await audio.arrayBuffer();
 
+      /*
+       * Protect the Worker from accidentally
+       * receiving an enormous audio chunk.
+       *
+       * The frontend should normally send
+       * approximately 60-second chunks.
+       */
+
+      const MAX_AUDIO_BYTES =
+        25 * 1024 * 1024;
+
+      if (
+        audioBuffer.byteLength >
+        MAX_AUDIO_BYTES
+      ) {
+
+        return json(
+          {
+            error:
+              "Audio chunk is too large. " +
+              "Please use smaller chunks."
+          },
+          413,
+          cors
+        );
+
+      }
+
+
       const audioBytes =
         [...new Uint8Array(audioBuffer)];
 
 
       // ==========================================
-      // WHISPER
+      // WHISPER TRANSCRIPTION
       // ==========================================
 
       const transcription =
         await env.AI.run(
-          "@cf/openai/whisper",
+          "@cf/openai/whisper-large-v3-turbo",
           {
             audio: audioBytes
           }
         );
 
+
       const transcript =
         transcription.text || "";
 
+
       const segments =
         transcription.segments || [];
+
 
       const words =
         transcription.words || [];
@@ -95,14 +127,23 @@ export default {
         return json(
           {
             success: true,
+
             ai: true,
+
             transcript: "",
+
             segments: [],
+
             words: [],
+
             hook: "",
+
             hookError: "",
+
             viralClips: [],
-            viralError: "No speech detected."
+
+            viralError:
+              "No speech detected."
           },
           200,
           cors
@@ -157,15 +198,13 @@ export default {
                   content:
                     `You are ClipAI, an expert viral short-form video editor.
 
-Your job is to find the BEST moments inside a video transcript that could become TikTok, YouTube Shorts or Instagram Reels clips.
+Find the BEST moments in the supplied video transcript for TikTok, YouTube Shorts or Instagram Reels.
 
-Analyze the transcript carefully.
-
-Look especially for:
+Look for:
 
 - surprising statements
 - funny moments
-- emotional reactions
+- emotional moments
 - arguments
 - controversial statements
 - unusual facts
@@ -174,15 +213,14 @@ Look especially for:
 - unexpected twists
 - impressive information
 - satisfying explanations
-- moments that create curiosity
-- moments where someone says something memorable
-- moments with a natural beginning and payoff
+- curiosity
+- memorable statements
+- natural beginnings and payoffs
 
-IMPORTANT:
-
-Only use information explicitly contained in the transcript.
+ONLY use information explicitly contained in the transcript.
 
 NEVER invent:
+
 - people
 - relationships
 - family
@@ -194,55 +232,49 @@ NEVER invent:
 - backstory
 - outcomes
 
-Do not turn an ordinary sentence into a fake dramatic story.
+Do not create fake drama.
 
-Choose up to 3 of the strongest moments.
+Choose up to 3 strong moments.
 
-A clip should normally be between 10 and 60 seconds.
+Each clip should normally be between 10 and 60 seconds.
 
-Do NOT make every clip the same length.
+Do not make every clip the same length.
 
-Prefer clips that have a clear reason someone would keep watching.
+Prefer moments with a clear beginning, interesting development and payoff.
 
 The timestamps MUST come from the supplied transcript.
 
-The clip start should begin slightly before the important statement when possible.
+Give each clip a score from 0 to 100.
 
-The clip end should include the natural conclusion or payoff.
-
-Give each clip a viral potential score from 0 to 100.
-
-Scoring:
-
-90-100 = extremely strong viral potential
-75-89 = strong potential
-60-74 = decent potential
+90-100 = extremely strong
+75-89 = strong
+60-74 = decent
 40-59 = weak
-0-39 = not worth clipping
+0-39 = poor
 
-Do not give high scores simply because something exists.
+Do not give high scores simply because a moment exists.
 
 Return ONLY valid JSON.
 
-Use exactly this structure:
+Format:
 
 [
   {
     "score": 92,
     "start": 12.5,
     "end": 42.8,
-    "reason": "Short explanation of why this moment is compelling.",
-    "hook": "A truthful short hook based only on what was said."
+    "reason": "Why this moment could perform well.",
+    "hook": "A truthful hook based only on the transcript."
   }
 ]
 
-If there are no genuinely interesting moments, return:
+If there are no genuinely interesting moments:
 
 []
 
-Do not use markdown.
-Do not use code fences.
-Do not write anything outside the JSON array.`
+No markdown.
+No code fences.
+No explanation outside the JSON.`
                 },
 
                 {
@@ -270,9 +302,18 @@ Do not write anything outside the JSON array.`
         raw =
           raw
             .trim()
-            .replace(/^```json/i, "")
-            .replace(/^```/i, "")
-            .replace(/```$/i, "")
+            .replace(
+              /^```json/i,
+              ""
+            )
+            .replace(
+              /^```/i,
+              ""
+            )
+            .replace(
+              /```$/i,
+              ""
+            )
             .trim();
 
 
@@ -281,7 +322,12 @@ Do not write anything outside the JSON array.`
           viralClips =
             JSON.parse(raw);
 
-          if (!Array.isArray(viralClips)) {
+
+          if (
+            !Array.isArray(
+              viralClips
+            )
+          ) {
 
             viralClips = [];
 
@@ -321,26 +367,38 @@ Do not write anything outside the JSON array.`
               return false;
             }
 
+
             const start =
               Number(clip.start);
 
+
             const end =
               Number(clip.end);
+
 
             if (
               !Number.isFinite(start) ||
               !Number.isFinite(end)
             ) {
+
               return false;
+
             }
 
-            if (end <= start) {
+
+            if (
+              end <= start
+            ) {
+
               return false;
+
             }
+
 
             return true;
 
           })
+
 
           .map(clip => {
 
@@ -350,6 +408,7 @@ Do not write anything outside the JSON array.`
                 Number(clip.start)
               );
 
+
             let end =
               Math.max(
                 start,
@@ -357,7 +416,10 @@ Do not write anything outside the JSON array.`
               );
 
 
-            // Prevent absurdly long clips.
+            /*
+             * Never allow a clip longer
+             * than 60 seconds.
+             */
 
             if (
               end - start >
@@ -374,8 +436,12 @@ Do not write anything outside the JSON array.`
               Number(clip.score);
 
 
-            if (!Number.isFinite(score)) {
+            if (
+              !Number.isFinite(score)
+            ) {
+
               score = 0;
+
             }
 
 
@@ -432,11 +498,13 @@ Do not write anything outside the JSON array.`
 
           })
 
+
           .sort(
             (a, b) =>
               b.score -
               a.score
           )
+
 
           .slice(
             0,
@@ -445,7 +513,7 @@ Do not write anything outside the JSON array.`
 
 
       // ==========================================
-      // GENERATE HOOK FOR THE BEST MOMENT
+      // GENERATE HOOK FOR BEST MOMENT
       // ==========================================
 
       if (
@@ -462,10 +530,16 @@ Do not write anything outside the JSON array.`
             .filter(segment => {
 
               const start =
-                Number(segment.start) || 0;
+                Number(
+                  segment.start
+                ) || 0;
+
 
               const end =
-                Number(segment.end) || start;
+                Number(
+                  segment.end
+                ) || start;
+
 
               return (
                 end >=
@@ -476,10 +550,12 @@ Do not write anything outside the JSON array.`
 
             })
 
+
             .map(
               segment =>
                 segment.text || ""
             )
+
 
             .join(" ");
 
@@ -510,6 +586,7 @@ The hook MUST be truthful.
 Use ONLY information explicitly contained in the supplied text.
 
 Do not invent:
+
 - secrets
 - people
 - relationships
@@ -564,6 +641,7 @@ No explanation.`
             hookError =
               error.message ||
               "Hook generation failed.";
+
 
             hook =
               bestClip.hook ||
@@ -638,9 +716,6 @@ No explanation.`
           viralError:
             viralError,
 
-          // Useful information for
-          // the frontend.
-
           clipCount:
             safeClips.length,
 
@@ -655,8 +730,11 @@ No explanation.`
               : null
 
         },
+
         200,
+
         cors
+
       );
 
 
@@ -673,8 +751,11 @@ No explanation.`
             "AI processing failed."
 
         },
+
         500,
+
         cors
+
       );
 
     }
@@ -731,7 +812,6 @@ function json(
     {
 
       status:
-
         status,
 
       headers: {
